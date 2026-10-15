@@ -44,6 +44,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.smartstepcounter.HISTORY_SIZE
 import com.example.smartstepcounter.StepCounterUiState
+import com.example.smartstepcounter.cloud.CloudStatus
+import com.example.smartstepcounter.cloud.CloudSyncState
 import com.example.smartstepcounter.sensor.MotionState
 import com.example.smartstepcounter.sensor.Thresholds
 import com.example.smartstepcounter.ui.theme.AxisXColor
@@ -52,6 +54,8 @@ import com.example.smartstepcounter.ui.theme.AxisZColor
 import com.example.smartstepcounter.ui.theme.RunningColor
 import com.example.smartstepcounter.ui.theme.StillColor
 import com.example.smartstepcounter.ui.theme.WalkingColor
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.min
@@ -82,7 +86,7 @@ private fun MotionState.color() = when (this) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun StepCounterScreen(state: StepCounterUiState, onReset: () -> Unit) {
+fun StepCounterScreen(state: StepCounterUiState, cloud: CloudSyncState, onReset: () -> Unit) {
     Scaffold(
         topBar = { TopAppBar(title = { Text("Smart Step Counter") }) },
     ) { padding ->
@@ -94,6 +98,7 @@ fun StepCounterScreen(state: StepCounterUiState, onReset: () -> Unit) {
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            CloudSyncCard(cloud)
             if (!state.sensorAvailable) {
                 Card(Modifier.fillMaxWidth()) {
                     Text(
@@ -120,6 +125,58 @@ private fun SectionCard(title: String, content: @Composable () -> Unit) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(title, style = MaterialTheme.typography.titleMedium)
             content()
+        }
+    }
+}
+
+private fun CloudStatus.label() = when (this) {
+    CloudStatus.NOT_CONFIGURED -> "Хмара не налаштована"
+    CloudStatus.IDLE -> "Очікування даних"
+    CloudStatus.SYNCING -> "Синхронізація…"
+    CloudStatus.SUCCESS -> "Синхронізовано"
+    CloudStatus.ERROR -> "Помилка відправки"
+    CloudStatus.PENDING -> "Офлайн — дані в черзі"
+}
+
+private fun CloudStatus.color() = when (this) {
+    CloudStatus.SUCCESS -> Color(0xFF2E7D32)
+    CloudStatus.ERROR -> Color(0xFFC62828)
+    CloudStatus.PENDING -> Color(0xFFF9A825)
+    CloudStatus.SYNCING -> Color(0xFF1565C0)
+    CloudStatus.IDLE, CloudStatus.NOT_CONFIGURED -> Color(0xFF9E9E9E)
+}
+
+@Composable
+private fun CloudSyncCard(cloud: CloudSyncState) {
+    val dotColor by animateColorAsState(cloud.status.color(), label = "cloudDot")
+    SectionCard("Хмарна синхронізація") {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier
+                    .size(12.dp)
+                    .background(dotColor, RoundedCornerShape(50)),
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(cloud.status.label(), fontWeight = FontWeight.SemiBold)
+        }
+        if (cloud.status == CloudStatus.NOT_CONFIGURED) {
+            Text(
+                "Додайте FIREBASE_DB_URL у local.properties і перезберіть застосунок",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            return@SectionCard
+        }
+        val last = cloud.lastSuccessAt?.let {
+            SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(it))
+        } ?: "—"
+        Text("Остання відправка: $last", style = MaterialTheme.typography.bodyMedium)
+        Text(
+            "Відправлено: ${cloud.sentCount} · У черзі: ${cloud.pendingCount}",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        cloud.lastError?.let {
+            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
         }
     }
 }

@@ -10,8 +10,13 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.smartstepcounter.ble.BleViewModel
+import com.example.smartstepcounter.cloud.CloudEvent
+import com.example.smartstepcounter.cloud.CloudSyncViewModel
 import com.example.smartstepcounter.ui.DeviceActions
 import com.example.smartstepcounter.ui.DeviceScreen
 import com.example.smartstepcounter.ui.MainScaffold
@@ -34,6 +39,13 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         )
     }
 
+    private val cloudViewModel: CloudSyncViewModel by viewModels {
+        CloudSyncViewModel.factory(
+            container = (application as SmartStepApp).container,
+            steps = viewModel.uiState,
+        )
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -46,8 +58,25 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             SmartStepCounterTheme {
                 val state = viewModel.uiState.collectAsStateWithLifecycle()
                 val bleState = bleViewModel.uiState.collectAsStateWithLifecycle()
+                val cloudState = cloudViewModel.state.collectAsStateWithLifecycle()
+                val snackbarHostState = remember { SnackbarHostState() }
+                LaunchedEffect(Unit) {
+                    cloudViewModel.events.collect { event ->
+                        val message = when (event) {
+                            CloudEvent.WentOffline -> "Немає інтернету — дані збережено в черзі (Pending)"
+                            is CloudEvent.Restored -> "Мережу відновлено, відправлено ${event.sent} записів"
+                        }
+                        snackbarHostState.showSnackbar(message)
+                    }
+                }
                 MainScaffold(
-                    sensorTab = { StepCounterScreen(state = state.value, onReset = viewModel::reset) },
+                    sensorTab = {
+                        StepCounterScreen(
+                            state = state.value,
+                            cloud = cloudState.value,
+                            onReset = viewModel::reset,
+                        )
+                    },
                     deviceTab = {
                         DeviceScreen(
                             state = bleState.value,
@@ -63,6 +92,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                             ),
                         )
                     },
+                    snackbarHostState = snackbarHostState,
                 )
             }
         }

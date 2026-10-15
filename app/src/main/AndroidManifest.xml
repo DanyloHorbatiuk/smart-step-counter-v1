@@ -12,6 +12,10 @@
         android:name="android.permission.BLUETOOTH_ADMIN"
         android:maxSdkVersion="30" />
 
+    <!-- Lab 3: cloud sync over REST and connectivity monitoring. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
     <!-- BLE is emulated in software, so real hardware is optional. -->
     <uses-feature
         android:name="android.hardware.bluetooth_le"
