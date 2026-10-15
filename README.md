@@ -191,13 +191,108 @@ DeviceScreen ◀── state / log (StateFlow) ── MockBleConnector
    акселерометра в `onResume`/`onPause`.
 
 
+## ЛР3: Cloud Sync
+
+Дані акселерометра й кроків синхронізуються з **Firebase Realtime Database** через її REST API
+(Retrofit 2 + Gson + OkHttp, без Firebase SDK). Тому всі запити видно в
+**App Inspection → Network Inspector** Android Studio, а в debug-збірці — у Logcat
+(`HttpLoggingInterceptor`, рівень BODY; у release логування HTTP вимкнене).
+
+### Структура в базі
+
+```
+devices/
+└── {deviceId}/                  UUID, згенерований при першому запуску (SharedPreferences)
+    ├── readings/
+    │   └── {pushId}             POST devices/{id}/readings.json → {"name": "<pushId>"}
+    │       ├── deviceId, type: "ACCELEROMETER", timestamp (мс, epoch)
+    │       ├── value (|a|, м/с²), x, y, z
+    │       └── steps, cadence, state (STILL/WALKING/RUNNING), rms
+    └── status                   PUT devices/{id}/status.json (перезаписується)
+        └── online, lastSync, steps
+```
+
+### Налаштування FIREBASE_DB_URL
+
+1. Firebase Console → проєкт → **Realtime Database** → *Create database*.
+2. Скопіюйте URL бази (напр. `https://<project>-default-rtdb.europe-west1.firebasedatabase.app`)
+   у `local.properties` (файл не потрапляє в git):
+   ```
+   FIREBASE_DB_URL=https://<project>-default-rtdb.europe-west1.firebasedatabase.app
+   ```
+3. Перезберіть застосунок — значення потрапляє в `BuildConfig.FIREBASE_DB_URL`.
+   Якщо ключа немає або URL невалідний, застосунок працює як раніше, а картка показує
+   «Хмара не налаштована».
+
+### Правила бази
+
+Для лабораторної (без автентифікації) запис дозволено лише у гілку `devices`:
+
+```json
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "devices": {
+      "$deviceId": {
+        ".read": true,
+        ".write": true
+      }
+    }
+  }
+}
+```
+
+> Такі правила відкривають гілку для всіх, хто знає URL. Для реального продукту потрібні
+> Firebase Auth і правила на кшталт `auth != null`.
+
+### Логіка відправки
+
+- `CloudSyncViewModel` раз на **5 с** бере останній snapshot і відправляє його лише тоді, коли з
+  минулої відправки змінилися кроки, стан руху або будь-яка вісь X/Y/Z на **≥ 0.5 м/с²**
+  (`SyncChangeFilter.AXIS_DELTA` — вище шуму сенсора у спокої, нижче амплітуди ходьби).
+  Зміна стану руху відправляється одразу, але не частіше 1 разу/с. Поки сенсор зупинено
+  (`onPause`), нічого не шлеться.
+- `CloudRepository` пропускає кожен запис через чергу (≤ 200, найстаріші відкидаються),
+  тож записи завжди йдуть по порядку. Запис видаляється з черги лише після відповіді 2xx;
+  при IOException/таймауті (10 с)/HTTP-помилці статус ERROR, запис лишається першим у черзі
+  і повторюється при наступній відправці або поверненні мережі. Після успішної відправки
+  оновлюється `status`.
+- `AndroidNetworkMonitor` (`registerDefaultNetworkCallback`, INTERNET + VALIDATED): коли мережа
+  повертається, черга відправляється автоматично.
+- Усі HTTP-виклики — у корутинах на `Dispatchers.IO`. Logcat: фільтр `tag:CloudSync`.
+
+Статуси картки «Хмарна синхронізація»: 🟢 SUCCESS, 🔴 ERROR, 🟡 PENDING (офлайн, дані в черзі),
+🔵 SYNCING, ⚪ IDLE / NOT_CONFIGURED.
+
+### Як тестувати
+
+**Unit-тести** (`./gradlew test`, фейкові `FirebaseApi` і `NetworkMonitor`):
+- `CloudRepositoryTest` — онлайн → SUCCESS і sentCount+1; офлайн → PENDING, черга росте, API не
+  викликається; повернення мережі → черга відправлена по порядку, pendingCount = 0;
+  IOException / HTTP 500 → ERROR, запис у черзі й повторно відправляється першим;
+  переповнення черги відкидає найстаріші;
+- `SyncChangeFilterTest` — без змін і шум 0.4 м/с² не шлються; вісь +0.6, нові кроки, новий стан — шлються;
+- `CloudSyncViewModelTest` — тікер 5 с, фільтр Δ, миттєва відправка зміни стану з обмеженням 1/с.
+
+**Офлайн-режим на емуляторі:**
+1. Вкажіть `FIREBASE_DB_URL`, запустіть застосунок, відкрийте App Inspection → Network Inspector.
+   Порухайте Virtual sensors — кожні 5 с з'являтимуться `POST …/readings.json` і `PUT …/status.json`,
+   а в Firebase Console — нові записи.
+2. Увімкніть Airplane mode (або вимкніть Wi-Fi і мобільні дані) — Snackbar
+   «Немає інтернету — дані збережено в черзі (Pending)», точка жовта, «У черзі» зростає.
+3. Вимкніть Airplane mode — після валідації мережі Snackbar «Мережу відновлено, відправлено N записів»,
+   у Network Inspector — серія POST-запитів у хронологічному порядку, «У черзі: 0».
+4. Помилку можна відтворити, вказавши URL неіснуючої бази або заборонивши запис у правилах
+   (HTTP 401/404) — точка червона, текст помилки під лічильниками.
+
 ## Структура
 
 ```
 app/src/main/java/com/example/smartstepcounter/
 ├── MainActivity.kt           SensorManager, SensorEventListener, onResume/onPause
 ├── SmartStepApp.kt           Application, тримає AppContainer
-├── AppContainer.kt           Manual DI: MockBleScanner, MockBleConnector
+├── AppContainer.kt           Manual DI: BLE-мок, мережа, Firebase API, CloudRepository
 ├── StepCounterViewModel.kt   стан UI (StateFlow), історія сигналу
 ├── sensor/StepDetector.kt    фільтри, детекція кроків, пороги, класифікація
 ├── ble/
@@ -208,6 +303,16 @@ app/src/main/java/com/example/smartstepcounter/
 │   ├── MockBleConnector.kt   емуляція GATT-з'єднання, лог, автоперепідключення
 │   ├── MockBleScanner.kt     емуляція сканування
 │   └── BleViewModel.kt       зв'язок ЛР1 ↔ BLE, throttle, команди хаба
+├── cloud/
+│   ├── SensorData.kt         SensorData, DeviceStatus, PushResponse
+│   ├── FirebaseApi.kt        Retrofit-інтерфейс REST + фабрика OkHttp/Gson
+│   ├── CloudSyncState.kt     статуси, стан синхронізації, події для Snackbar
+│   ├── NetworkMonitor.kt     ConnectivityManager → StateFlow<Boolean>
+│   ├── ICloudRepository.kt   інтерфейс шару
+│   ├── CloudRepository.kt    черга, flush, POST/PUT; NotConfiguredCloudRepository
+│   ├── DeviceIdProvider.kt   стабільний UUID пристрою
+│   ├── SyncChangeFilter.kt   фільтр Δ = 0.5 м/с²
+│   └── CloudSyncViewModel.kt тікер 5 с, миттєва відправка зміни стану
 └── ui/
     ├── MainScaffold.kt       NavigationBar: «Сенсор» / «Пристрій»
     ├── StepCounterScreen.kt  Compose UI + Canvas-індикатори
