@@ -86,14 +86,131 @@ Android 12+ (API 31+), Kotlin, Jetpack Compose.
 - вібрація 10 Гц → не більше 4 кроків/с;
 - межі порогів класифікації.
 
+## ЛР2: BLE Interface Layer
+
+Емулятор Android не має повноцінного Bluetooth, тому взаємодію з IoT-пристроєм реалізовано
+програмним шаром, що імітує BLE-хаб **StepHub-01**. Застосунок передає на хаб кроки й стан руху
+та приймає від нього команди. Інтерфейс `IBleConnector` не залежить від реалізації: `MockBleConnector`
+можна замінити обгорткою над `BluetoothGatt`, не змінюючи `BleViewModel` і UI.
+
+### GATT-профіль
+
+| Елемент | UUID | Властивості | Вміст |
+|---|---|---|---|
+| Service StepHub | `a3f10001-6c2e-4d8b-9e57-1b0c4f2a7d90` | — | основний сервіс хаба |
+| STEPS | `a3f10002-6c2e-4d8b-9e57-1b0c4f2a7d90` | Read, Notify | кількість кроків і темп |
+| MOTION | `a3f10003-6c2e-4d8b-9e57-1b0c4f2a7d90` | Read, Notify | стан руху та RMS |
+| COMMAND | `a3f10004-6c2e-4d8b-9e57-1b0c4f2a7d90` | Write | команди на хаб / від хаба |
+| CCCD | `00002902-0000-1000-8000-00805f9b34fb` | дескриптор | вмикає Notify (стандарт Bluetooth SIG) |
+
+### Формат пакетів
+
+Короткі текстові рядки UTF-8 `КЛЮЧ=значення;КЛЮЧ=значення` (десятковий роздільник — крапка):
+
+| Характеристика | Приклад | Коли надсилається |
+|---|---|---|
+| STEPS | `STEPS=28;CAD=108` (кроки; кроків/хв) | при зміні кількості кроків, не частіше 1 раз/с |
+| MOTION | `STATE=WALKING;RMS=1.42` (STILL/WALKING/RUNNING; м/с²) | при зміні стану руху, не частіше 1 раз/с |
+| COMMAND | `RESET`, `PING`, `PONG` | команди |
+
+На кожен запис хаб відповідає `ACK`, на `PING`, записаний у COMMAND, — `PONG`.
+
+Команди від хаба (Notify на COMMAND):
+- `RESET` — скидає лічильник кроків (той самий `reset()`, що й кнопка «Скинути» в ЛР1);
+- `PING` — застосунок відповідає `PONG`.
+
+### Стани з'єднання
+
+```
+               scan()                   2 с
+ DISCONNECTED ───────▶ SCANNING ─────────────────▶ DISCONNECTED
+      │  ▲                                          (список пристроїв)
+      │  │ disconnect() / «Giving up»
+      │  │
+      │  └────────────────────────────────┐
+      ▼ connect(StepHub-01)               │
+ CONNECTING ──── 1 с ────▶ CONNECTED ◀────┼──── ACK (150 мс) ───┐
+      ▲                       │  │        │                     │
+      │                       │  └── sendData() ──▶ DATA_TRANSFER
+      │                       │ обрив зв'язку
+      │                       ▼
+      │                 DISCONNECTED ── спроба 1 (через 1 с)
+      └──────────────── спроба 2 (через 2 с) / спроба 3 (через 4 с)
+                        успіх → CONNECTED; 3 невдачі → DISCONNECTED
+```
+
+Підключення дозволене лише до `StepHub-01`; спроба підключитися до іншого пристрою пише
+помилку в лог. `sendData()` без з'єднання повертає `false`. Записи серіалізовано `Mutex`-ом, як
+у справжньому GATT-стеку (одна операція за раз).
+
+### Потік даних
+
+```
+Accelerometer → MainActivity → StepCounterViewModel.uiState (StateFlow)
+                                        │  передається у фабрику BleViewModel
+                                        ▼
+BleViewModel: map(steps | state) → distinctUntilChanged → throttle 1 с → IBleConnector.sendData
+              connector.incoming: RESET → StepCounterViewModel.reset(), PING → sendData("PONG")
+                                        │
+DeviceScreen ◀── state / log (StateFlow) ── MockBleConnector
+```
+
+`BleViewModel` отримує `StateFlow` стану кроків і функцію `reset` через `ViewModelProvider.Factory`,
+а сканер і конектор — з `AppContainer` (`SmartStepApp`). Тому `StepCounterViewModel` нічого не знає
+про BLE і після ЛР1 не змінювався. Передача ввімкнена лише поки з'єднання активне (`collectLatest`
+за станом); throttle реалізовано через `conflate()` + `delay(1000)`: перше значення йде одразу,
+проміжні відкидаються, останнє гарантовано доходить.
+
+### Як тестувати
+
+**Unit-тести (JVM, віртуальний час `runTest` / `advanceTimeBy`):**
+
+```
+./gradlew test
+```
+
+- `MockBleScannerTest` — StepHub-01 знаходиться рівно через 2000 мс, під час пошуку стан SCANNING;
+- `MockBleConnectorTest` — CONNECTING → CONNECTED за 1 с, відмова для стороннього пристрою,
+  disconnect, `sendData` без з'єднання → `false`, TX/ACK і DATA_TRANSFER, PING → PONG,
+  вхідні команди, обрив → 3 спроби на 1/4/9 с після обриву (затримки 1/2/4 с + 1 с на з'єднання),
+  відновлення на 3-й спробі, скасування автоперепідключення;
+- `BlePacketTest` — формат пакетів і розмір у байтах UTF-8.
+
+**На емуляторі:**
+1. Вкладка «Пристрій» → «Пошук пристроїв» → дозволити Bluetooth і геолокацію
+   (у разі відмови з'явиться повідомлення, пошук не запуститься).
+2. Через 2 с з'являться StepHub-01 («наш пристрій»), Mi Band 7 і Unknown. Натиск на Mi Band 7 —
+   помилка в терміналі; натиск на StepHub-01 — «Підключення…» → «Підключено».
+3. Рухайте сенсори (Extended controls → Virtual sensors): у терміналі з'являтимуться `TX [STEPS]` і
+   `TX [MOTION]` не частіше одного разу на секунду, після кожного — `RX ACK`.
+4. «Хаб: RESET» — лічильник на вкладці «Сенсор» скидається, на хаб іде `STEPS=0;CAD=0`.
+   «Хаб: PING» — застосунок відповідає `PONG`.
+5. «Імітувати обрив зв'язку» — у лозі видно спроби перепідключення 1/3, 2/3, 3/3 зі зростаючою
+   затримкою; хаб «повертається» на третій спробі.
+6. Logcat: фільтр `tag:BleMock` — усі BLE-події, `tag:SensorLifecycle` — реєстрація/зняття слухача
+   акселерометра в `onResume`/`onPause`.
+
+
 ## Структура
 
 ```
 app/src/main/java/com/example/smartstepcounter/
 ├── MainActivity.kt           SensorManager, SensorEventListener, onResume/onPause
+├── SmartStepApp.kt           Application, тримає AppContainer
+├── AppContainer.kt           Manual DI: MockBleScanner, MockBleConnector
 ├── StepCounterViewModel.kt   стан UI (StateFlow), історія сигналу
 ├── sensor/StepDetector.kt    фільтри, детекція кроків, пороги, класифікація
+├── ble/
+│   ├── BleUuids.kt           GATT-профіль StepHub, команди
+│   ├── BleModels.kt          BleDevice, BleConnectionState, BleLogEntry
+│   ├── BlePacket.kt          формат пакетів STEPS / MOTION
+│   ├── IBleConnector.kt      інтерфейс шару + BleHubSimulator
+│   ├── MockBleConnector.kt   емуляція GATT-з'єднання, лог, автоперепідключення
+│   ├── MockBleScanner.kt     емуляція сканування
+│   └── BleViewModel.kt       зв'язок ЛР1 ↔ BLE, throttle, команди хаба
 └── ui/
+    ├── MainScaffold.kt       NavigationBar: «Сенсор» / «Пристрій»
     ├── StepCounterScreen.kt  Compose UI + Canvas-індикатори
+    ├── DeviceScreen.kt       пошук, підключення, керування, термінал
     └── theme/Theme.kt        Material 3 (dynamic color)
 ```

@@ -1,0 +1,16 @@
+# Gradle / build
+.gradle/
+build/
+.kotlin/
+.cxx/
+.externalNativeBuild/
+captures/
+
+# IDE
+.idea/
+*.iml
+.DS_Store
+
+# Local config / secrets
+local.properties
+google-services.json
