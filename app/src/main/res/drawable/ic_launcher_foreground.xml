@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Two footprints. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M42,34 C48,34 50,42 49,50 C48,57 45,62 40,62 C35,62 34,56 35,49 C36,41 37,34 42,34 Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M41,65 C45,65 47,67 46,71 C45,75 42,76 39,75 C36,74 36,71 37,68 C38,66 39,65 41,65 Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M66,42 C71,42 74,49 73,56 C72,63 68,68 64,68 C59,68 58,62 59,55 C60,48 62,42 66,42 Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M65,71 C69,71 71,73 70,77 C69,81 66,82 63,81 C60,80 60,77 61,74 C62,72 63,71 65,71 Z" />
+</vector>
