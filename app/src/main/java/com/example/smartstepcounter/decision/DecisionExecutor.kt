@@ -2,7 +2,6 @@ package com.example.smartstepcounter.decision
 
 import com.example.smartstepcounter.actuator.Actuator
 import com.example.smartstepcounter.actuator.ActuatorType
-import com.example.smartstepcounter.actuator.EventSource
 import com.example.smartstepcounter.actuator.VibrationPattern
 
 /**
@@ -25,10 +24,10 @@ class DecisionExecutor(
         val on = decision.action == DecisionAction.ACTIVATE
         when (decision.actuator) {
             ActuatorType.VIBRATION -> if (on) {
-                actuator.triggerAlarm(decision.pattern ?: VibrationPattern.SINGLE, EventSource.AUTO, decision.reason)
+                actuator.triggerAlarm(decision.pattern ?: VibrationPattern.SINGLE, decision.source, decision.reason)
             }
-            ActuatorType.TORCH -> actuator.toggleFlashlight(on, EventSource.AUTO, decision.reason)
-            ActuatorType.LAMP -> actuator.setVirtualLamp(on, EventSource.AUTO, decision.reason)
+            ActuatorType.TORCH -> actuator.toggleFlashlight(on, decision.source, decision.reason)
+            ActuatorType.LAMP -> actuator.setVirtualLamp(on, decision.source, decision.reason)
         }
         return true
     }

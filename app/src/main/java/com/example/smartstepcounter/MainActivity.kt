@@ -20,6 +20,7 @@ import com.example.smartstepcounter.ble.BleViewModel
 import com.example.smartstepcounter.cloud.CloudEvent
 import com.example.smartstepcounter.cloud.CloudSyncViewModel
 import com.example.smartstepcounter.history.StorageEvent
+import com.example.smartstepcounter.ml.AiViewModel
 import com.example.smartstepcounter.ui.AnalyticsActions
 import com.example.smartstepcounter.ui.AnalyticsScreen
 import com.example.smartstepcounter.ui.ControlActions
@@ -68,6 +69,15 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         )
     }
 
+    // Lab 6: on-device activity classifier over the same samples as DecisionEngine.
+    private val aiViewModel: AiViewModel by viewModels {
+        AiViewModel.factory(
+            container = (application as SmartStepApp).container,
+            context = this,
+            samples = viewModel.samples,
+        )
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -81,6 +91,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 val state = viewModel.uiState.collectAsStateWithLifecycle()
                 val bleState = bleViewModel.uiState.collectAsStateWithLifecycle()
                 val cloudState = cloudViewModel.state.collectAsStateWithLifecycle()
+                val aiState = aiViewModel.uiState.collectAsStateWithLifecycle()
                 val snackbarHostState = remember { SnackbarHostState() }
                 LaunchedEffect(Unit) {
                     cloudViewModel.events.collect { event ->
@@ -95,6 +106,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     controlViewModel.ruleEvents.collect { snackbarHostState.showSnackbar(it) }
                 }
                 LaunchedEffect(Unit) {
+                    aiViewModel.alerts.collect { snackbarHostState.showSnackbar(it) }
+                }
+                LaunchedEffect(Unit) {
                     analyticsViewModel.events.collect { event ->
                         when (event) {
                             is StorageEvent.SpaceFreed -> snackbarHostState.showSnackbar("Мало місця: старі записи видалено")
@@ -106,6 +120,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                         StepCounterScreen(
                             state = state.value,
                             cloud = cloudState.value,
+                            ai = aiState.value,
                             onReset = viewModel::reset,
                         )
                     },

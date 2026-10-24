@@ -11,6 +11,7 @@ import androidx.compose.ui.platform.LocalContext
 val StillColor = Color(0xFF78909C)
 val WalkingColor = Color(0xFF43A047)
 val RunningColor = Color(0xFFE53935)
+val ShakeColor = Color(0xFF8E24AA)
 
 val AxisXColor = Color(0xFFE53935)
 val AxisYColor = Color(0xFF43A047)

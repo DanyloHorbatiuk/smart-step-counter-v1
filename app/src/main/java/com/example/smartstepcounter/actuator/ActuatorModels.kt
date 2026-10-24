@@ -13,6 +13,9 @@ enum class EventSource {
 
     /** A command from Firebase (devices/{id}/control). */
     CLOUD,
+
+    /** The on-device ML classifier (Lab 6), see [com.example.smartstepcounter.decision.AiRules]. */
+    AI,
 }
 
 /**

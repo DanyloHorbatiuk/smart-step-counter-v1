@@ -46,6 +46,7 @@ import com.example.smartstepcounter.HISTORY_SIZE
 import com.example.smartstepcounter.StepCounterUiState
 import com.example.smartstepcounter.cloud.CloudStatus
 import com.example.smartstepcounter.cloud.CloudSyncState
+import com.example.smartstepcounter.ml.AiUiState
 import com.example.smartstepcounter.sensor.MotionState
 import com.example.smartstepcounter.sensor.Thresholds
 import com.example.smartstepcounter.ui.theme.AxisXColor
@@ -86,7 +87,7 @@ private fun MotionState.color() = when (this) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun StepCounterScreen(state: StepCounterUiState, cloud: CloudSyncState, onReset: () -> Unit) {
+fun StepCounterScreen(state: StepCounterUiState, cloud: CloudSyncState, ai: AiUiState, onReset: () -> Unit) {
     Scaffold(
         topBar = { TopAppBar(title = { Text("Smart Step Counter") }) },
     ) { padding ->
@@ -98,6 +99,7 @@ fun StepCounterScreen(state: StepCounterUiState, cloud: CloudSyncState, onReset:
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            AiInsightsCard(ai)
             CloudSyncCard(cloud)
             if (!state.sensorAvailable) {
                 Card(Modifier.fillMaxWidth()) {

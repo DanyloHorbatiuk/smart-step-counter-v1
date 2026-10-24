@@ -46,4 +46,19 @@ class DecisionExecutorTest {
         assertTrue(actuator.recorded.isEmpty())
         assertEquals(2, logs.count { it.startsWith("skipped") })
     }
+
+    @Test
+    fun decisionSourceIsPassedToActuator() {
+        executor.execute(
+            Decision(
+                rule = Rule.R4_AI_ANOMALY,
+                actuator = ActuatorType.TORCH,
+                action = DecisionAction.ACTIVATE,
+                reason = "Аномалія: SHAKE 0,91",
+                message = "",
+                source = EventSource.AI,
+            )
+        )
+        assertEquals(EventSource.AI, actuator.recorded.single().source)
+    }
 }

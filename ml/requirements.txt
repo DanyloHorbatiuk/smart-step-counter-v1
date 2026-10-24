@@ -1,0 +1,5 @@
+# Same minor version as the Android runtime (org.tensorflow:tensorflow-lite:2.17.0),
+# so every op version written by the converter is supported on the device.
+tensorflow==2.17.1
+numpy>=1.26,<2.0
+scikit-learn>=1.4

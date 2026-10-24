@@ -1,0 +1,7 @@
+{
+  "input_scale": 20.0,
+  "window": 50,
+  "hop": 25,
+  "sample_rate_hz": 50,
+  "labels": ["STILL", "WALKING", "RUNNING", "SHAKE"]
+}

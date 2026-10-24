@@ -50,6 +50,10 @@ android {
         compose = true
         buildConfig = true
     }
+    // Lab 6: keep the model uncompressed in the APK so it can be memory-mapped from assets.
+    androidResources {
+        noCompress += "tflite"
+    }
     testOptions {
         // Lets JVM tests construct android.database.sqlite exceptions (stubs return defaults).
         unitTests.isReturnDefaultValues = true
@@ -81,6 +85,7 @@ dependencies {
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)
     implementation(libs.vico.compose.m3)
+    implementation(libs.tensorflow.lite)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)

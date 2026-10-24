@@ -272,6 +272,7 @@ private fun EventSource.color() = when (this) {
     EventSource.AUTO -> Color(0xFF6A1B9A)
     EventSource.MANUAL -> Color(0xFF1565C0)
     EventSource.CLOUD -> Color(0xFFEF6C00)
+    EventSource.AI -> Color(0xFF00897B)
 }
 
 @Composable

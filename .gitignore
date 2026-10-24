@@ -14,3 +14,8 @@ captures/
 # Local config / secrets
 local.properties
 google-services.json
+
+# Lab 6: Python virtualenv and generated dataset
+ml/.venv/
+ml/data/
+__pycache__/

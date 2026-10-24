@@ -531,6 +531,122 @@ CloudRepository ──► PendingUploadDao ─────────┘
 «Керуванні», і на графіку з'явиться маркер. Далі увімкніть авіарежим, походіть, закрийте застосунок,
 вимкніть авіарежим і відкрийте його знову: черга відправиться, і з'явиться Snackbar.
 
+## ЛР6: On-device ML
+
+Маленька нейромережа TensorFlow Lite класифікує рух **на пристрої**, без хмари. Вона розрізняє
+4 класи, серед них **SHAKE** (струшування, можлива спроба крадіжки або злому), якого порогова
+класифікація ЛР1 не бачить. Модель керує частотою запису в БД (ЛР5) і викликає тривогу через
+актуатори (ЛР4).
+
+```
+StepCounterViewModel.samples (кожен відлік, dynamic = |a| − g після фільтрів ЛР1)
+        │
+        ▼
+MlPipeline ── CircularBuffer(50) ── кожні 25 відліків (0,5 с) ──► ActivityClassifier.classify()
+        │                                                           (Dispatchers.Default, TFLite)
+        ├─ MajorityVoter(3) ──► StateFlow<AiInsight> ──► «AI Insights» на вкладці «Сенсор»
+        ▼
+AiController ── AiRules ──┬─► SensorHistoryRepository.setRecordInterval(250 / 1000 мс)
+                          └─► DecisionExecutor ─► SmartActuator (source = AI) ─► actuator_events
+```
+
+### Модель
+
+| | |
+|---|---|
+| Файл | `app/src/main/assets/activity_classifier.tflite` (10,8 КіБ, float32), `labels.txt` |
+| Архітектура | Dense 32 ReLU → Dense 16 ReLU → Dense 4 Softmax, 2228 параметрів |
+| Вхід | `[1, 50]` float32: 1 с динамічного прискорення (50 Гц), **поділеного на 20 м/с²** |
+| Вихід | `[1, 4]` float32: softmax-ймовірності `STILL, WALKING, RUNNING, SHAKE` |
+| Runtime | `org.tensorflow:tensorflow-lite:2.17.0`; модель memory-map з assets (`noCompress += "tflite"`) |
+
+Вхід — той самий `dynamic`, що рахує `StepDetector`. Тому модель, як і пороги, не залежить від
+орієнтації телефону. Генератор датасету пропускає синтетичний |a| через Python-порт тих самих
+фільтрів (τ = 0,04 с і 0,8 с), тож навчання й inference бачать однаковий сигнал.
+
+Контракт моделі (`input_scale`, `window`, `hop`, `labels`) зберігається в **одному місці**:
+`ml/model_config.json`. Його читає `train.py`; Kotlin-константи в `MlConfig` звіряє з ним
+`MlConfigTest`. При завантаженні `ActivityClassifier` перевіряє форми й dtype тензорів і порядок
+`labels.txt`. Якщо модель не завантажилась (немає файлу, інші форми, немає нативної бібліотеки),
+застосунок не падає: картка показує «ML недоступний», а все інше працює на порогах ЛР1.
+
+Dense обрано, бо точність уже ≥ 95%. `train.py` автоматично переходить на Conv1D, лише якщо
+Dense не досягне 95%.
+
+### Метрики (з `ml/report.md`, test = 2400 вікон, виміряно на .tflite)
+
+**Accuracy 99,88%**
+
+| Клас | Precision | Recall | F1 |
+|---|---|---|---|
+| STILL | 0.998 | 1.000 | 0.999 |
+| WALKING | 0.998 | 1.000 | 0.999 |
+| RUNNING | 0.998 | 1.000 | 0.999 |
+| SHAKE | 1.000 | 0.995 | 0.997 |
+
+Усі 3 помилки — вікна SHAKE (по одному прийнято за STILL, WALKING і RUNNING). Дані синтетичні,
+тож цифри оптимістичні: на реальних записах точність буде нижчою.
+
+### Як перенавчити
+
+```
+python3 -m venv ml/.venv
+ml/.venv/bin/pip install -r ml/requirements.txt
+ml/.venv/bin/python ml/generate_dataset.py   # ml/data/dataset.npz, 4 × 4000 вікон, seed 42, 70/15/15
+ml/.venv/bin/python ml/train.py              # .tflite + labels.txt в assets, ml/report.md
+```
+
+`tensorflow==2.17.1` у Python відповідає runtime 2.17.0 на Android: конвертер не запише версій
+операцій, яких runtime не знає. Якщо змінюєте нормалізацію чи вікно, редагуйте `ml/model_config.json`
+і `MlConfig.kt` разом (інакше впаде `MlConfigTest`).
+
+### Інтеграція
+
+- **Згладжування:** результат — більшість із 3 останніх прогнозів (1,5 с), ймовірності усереднюються.
+- **ЛР5, частота запису:** згладжений RUNNING з confidence ≥ 0,7 → `setRecordInterval(250 мс)`.
+  Після виходу з RUNNING запис ще 3 с іде з інтервалом 250 мс, потім повертається на 1000 мс. Зміна
+  пишеться в logcat (`adb logcat -s AI`) і видна в картці та на вкладці «Аналітика».
+- **ЛР4, правило R4 «AI: аномалія руху»:** SHAKE з confidence ≥ 0,8 у **2 вікнах поспіль** (сирих,
+  без згладжування, щоб не запізнюватись) вмикає вібрацію ALARM і ліхтарик, source = `AI`,
+  reason = «Аномалія: SHAKE 0,91». Cooldown 10 с. Коли він минає і струшування немає, ліхтарик
+  вимикається. Рішення йде через `DecisionExecutor`, тож поважає перемикач авто-режиму. Подія
+  потрапляє в журнал «Керування» і в таблицю `actuator_events` (новий `EventSource.AI` зберігається
+  як рядок, міграція не потрібна).
+- **Порівняння з ЛР1:** картка показує, чи збігається клас моделі зі станом `StepDetector`.
+  Для SHAKE відповідника немає, тому завжди «не збігається».
+
+### Симулятор руху для емулятора
+
+```
+python3 tools/emu_motion.py --mode demo            # still → walk → run → shake по 8 с
+python3 tools/emu_motion.py --mode shake --seconds 10
+```
+
+Скрипт підключається до консолі емулятора (`localhost:5554`, токен з
+`~/.emulator_console_auth_token`) і шле `sensor set acceleration x:y:z` з частотою ~25 Гц.
+Профілі ті самі, що в датасеті. Застосунок читає сенсор з частотою ~50 Гц, тому кожне значення
+приходить двічі. Цей ефект враховано в датасеті (30% вікон з sample-and-hold 25 Гц).
+
+### Тести
+
+- JVM: `CircularBufferTest`, `MlConfigTest` (константа нормалізації, вікно, мітки = `model_config.json`
+  і `labels.txt`), `MajorityVoterTest`, `MlPipelineTest` (перше вікно після 50 відліків, далі кожні 25,
+  «ML недоступний», помилка inference), `AiRulesTest` (250/1000 мс, затримка 3 с, SHAKE 1 vs 2 вікна,
+  cooldown, вимкнення ліхтарика), `AiIntegrationTest` (фейковий класифікатор → пайплайн → репозиторій
+  і актуатор).
+- androidTest `ActivityClassifierTest`: модель з assets, форми `[1,50]`/`[1,4]`, сума ймовірностей ≈ 1,
+  синтетична ходьба (1,8 Гц, 2,5 м/с² через `StepDetector`) → WALKING, біг → RUNNING, нулі → STILL.
+
+### On-device vs cloud AI
+
+On-device inference працює без мережі й без затримки на запит (≈ 0,1 мс на вікно). Сирі дані
+сенсора не покидають телефон, що добре для приватності, а сервер не потрібен. Тому реакція на
+SHAKE-аномалію спрацьовує навіть в авіарежимі. Ціна — обмеження пристрою: модель має бути
+крихітною, її оновлення вимагає нового APK (або окремого механізму доставки), а навчання й
+моніторинг якості на реальних даних складніші. Хмарна модель може бути як завгодно великою,
+оновлюється миттєво і бачить дані всіх користувачів. Натомість вона залежить від мережі, додає
+сотні мілісекунд затримки, коштує грошей за запити і вимагає передавати сенсорні дані третій стороні.
+
 ## Структура
 
 ```
@@ -558,10 +674,20 @@ app/src/main/java/com/example/smartstepcounter/
 │   ├── RetentionPolicy.kt    20 000 записів / 24 год / раз на хвилину
 │   └── StorageState.kt       OK / FULL / ERROR, події для Snackbar
 ├── analytics/AnalyticsViewModel.kt  стан вкладки «Аналітика», серії графіка
+├── ml/
+│   ├── MlConfig.kt           контракт моделі: нормалізація 20 м/с², вікно 50, hop 25
+│   ├── AiModels.kt           AiLabel, Prediction, AiInsight, інтерфейс Classifier
+│   ├── CircularBuffer.kt     кільцевий буфер FloatArray
+│   ├── ActivityClassifier.kt TFLite Interpreter, memory-map з assets, перевірка тензорів
+│   ├── MajorityVoter.kt      більшість із 3 останніх прогнозів
+│   ├── MlPipeline.kt         відліки → вікна → inference на Dispatchers.Default
+│   ├── AiController.kt       прогноз → інтервал запису (ЛР5) і тривога (ЛР4)
+│   └── AiViewModel.kt        стан блоку «AI Insights»
 ├── decision/
 │   ├── DecisionConfig.kt     пороги R1–R3 з поясненнями
 │   ├── Decision.kt           Rule, DecisionAction, Decision
 │   ├── DecisionEngine.kt     правила R1–R3 (чистий Kotlin)
+│   ├── AiRules.kt            правила моделі: інтервал запису, R4 SHAKE-аномалія
 │   └── DecisionExecutor.kt   виконання / лише лог при вимкненому авто-режимі
 ├── ble/
 │   ├── BleUuids.kt           GATT-профіль StepHub, команди
@@ -589,9 +715,13 @@ app/src/main/java/com/example/smartstepcounter/
 └── ui/
     ├── MainScaffold.kt       NavigationBar: «Сенсор» / «Пристрій» / «Керування» / «Аналітика»
     ├── StepCounterScreen.kt  Compose UI + Canvas-індикатори
+    ├── AiInsightsCard.kt     блок «AI Insights»: клас, ймовірності, inference, інтервал
     ├── DeviceScreen.kt       пошук, підключення, керування, термінал
     ├── ControlScreen.kt      лампа, ліхтарик, вібрація, авто-режим, статус SSE, журнал
     ├── AnalyticsScreen.kt    графік Vico, перемикачі серій, статистика БД, історія актуаторів
     └── theme/Theme.kt        Material 3 (dynamic color)
+app/src/main/assets/          activity_classifier.tflite, labels.txt
 app/schemas/                  експортована схема Room (JSON)
+ml/                           model_config.json, generate_dataset.py, train.py, report.md
+tools/emu_motion.py           симулятор акселерометра для емулятора
 ```
