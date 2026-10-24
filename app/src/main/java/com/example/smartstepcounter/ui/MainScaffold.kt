@@ -20,10 +20,11 @@ import androidx.compose.ui.Modifier
 private enum class Tab(val title: String, val icon: String) {
     SENSOR("Сенсор", "👣"),
     DEVICE("Пристрій", "📡"),
+    CONTROL("Керування", "🎛️"),
 }
 
 /**
- * Two-tab shell without navigation-compose: the selected tab is plain saveable state.
+ * Tab shell without navigation-compose: the selected tab is plain saveable state.
  * Each tab keeps its own Scaffold/TopAppBar; the insets used by the bottom bar
  * are consumed so the inner Scaffolds don't add them a second time.
  */
@@ -31,6 +32,7 @@ private enum class Tab(val title: String, val icon: String) {
 fun MainScaffold(
     sensorTab: @Composable () -> Unit,
     deviceTab: @Composable () -> Unit,
+    controlTab: @Composable () -> Unit,
     snackbarHostState: SnackbarHostState,
 ) {
     var selected by rememberSaveable { mutableStateOf(Tab.SENSOR) }
@@ -57,6 +59,7 @@ fun MainScaffold(
             when (selected) {
                 Tab.SENSOR -> sensorTab()
                 Tab.DEVICE -> deviceTab()
+                Tab.CONTROL -> controlTab()
             }
         }
     }

@@ -4,8 +4,12 @@ import android.hardware.SensorManager
 import androidx.lifecycle.ViewModel
 import com.example.smartstepcounter.sensor.StepDetector
 import com.example.smartstepcounter.sensor.StepSnapshot
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 
@@ -30,6 +34,14 @@ class StepCounterViewModel : ViewModel() {
     private val _uiState = MutableStateFlow(StepCounterUiState())
     val uiState: StateFlow<StepCounterUiState> = _uiState.asStateFlow()
 
+    // Lab 4: every snapshot for DecisionEngine. A StateFlow would conflate values and
+    // could hide a single-sample impact peak (R3), so this is a buffered SharedFlow.
+    private val _samples = MutableSharedFlow<StepSnapshot>(
+        extraBufferCapacity = 64,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+    val samples: SharedFlow<StepSnapshot> = _samples.asSharedFlow()
+
     fun setSensorAvailable(available: Boolean) {
         _uiState.update { it.copy(sensorAvailable = available) }
     }
@@ -52,6 +64,7 @@ class StepCounterViewModel : ViewModel() {
                 history = (it.history + snapshot.dynamic).takeLast(HISTORY_SIZE),
             )
         }
+        _samples.tryEmit(snapshot)
     }
 
     fun reset() {

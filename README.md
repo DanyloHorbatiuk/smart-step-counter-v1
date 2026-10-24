@@ -286,15 +286,133 @@ devices/
 4. Помилку можна відтворити, вказавши URL неіснуючої бази або заборонивши запис у правилах
    (HTTP 401/404) — точка червона, текст помилки під лічильниками.
 
+## ЛР4: Актуатори та Cloud-to-Device
+
+Два типи керування виконавчими пристроями (вкладка **«Керування»**):
+- **А) локальне автоматичне** — `DecisionEngine` перетворює дані акселерометра на рішення;
+- **Б) дистанційне Cloud-to-Device** — команда з Firebase приходить потоком SSE, і застосунок
+  реагує на неї одразу.
+
+Актуатори (`actuator/SmartActuator`): вібромотор (`VibratorManager`, `VibrationEffect.createWaveform`,
+дозвіл `VIBRATE`), ліхтарик (`CameraManager.setTorchMode` для камери з `FLASH_INFO_AVAILABLE`) і
+віртуальна лампа в UI. Якщо спалаху немає (`FEATURE_CAMERA_FLASH`, напр. емулятор) або виникла
+`CameraAccessException`, ліхтарик стає **віртуальним**: стан показується тільки в UI, у Logcat пишеться
+попередження. `CameraManager.TorchCallback` синхронізує стан із реальним ліхтариком (наприклад,
+якщо його ввімкнули з шторки). Кожна дія записується як `ActuatorEvent(timestamp, actuator, on, source, reason)`:
+вона потрапляє в журнал на екрані та в Logcat (`tag:Actuator`). У ЛР5 ця модель піде в БД.
+
+### Правила
+
+| Правило | Умова | Дія |
+|---|---|---|
+| R1 «Ціль досягнута» | `steps ≥ 50` | подвійна вібрація, один раз, повторно лише після скидання лічильника |
+| R2 «Біг — сигнальний ліхтар» | RUNNING безперервно ≥ 3 с | увімкнути ліхтарик; вимкнути після ≥ 5 с без RUNNING |
+| R3 «Різкий удар» | `|a| ≥ 25 м/с²` (≈ 2,5 g) | вібрація-тривога, не частіше ніж раз на 10 с |
+
+Усі пороги зібрано в `decision/DecisionConfig.kt`, а пояснення до кожного значення є в KDoc.
+Для R2 використано гістерезис за часом (3 с на ввімкнення, 5 с на вимкнення): коротке
+сповільнення не вимикає ліхтар і він не блимає. Перемикач **«Автоматичний режим»** вимикає
+виконання рішень, але вони все одно пишуться в Logcat (`tag:Decision`), а Snackbar показує
+«(авто-режим вимкнено)».
+
+### Блок-схема рішення
+
+```
+для кожного StepSnapshot (≈ 50 Гц), now = elapsedRealtime:
+  R1: IF steps < goal            THEN goalFired := false
+      ELSE IF NOT goalFired      THEN goalFired := true; VIBRATE(DOUBLE_PULSE); Snackbar
+  R2: IF state == RUNNING        THEN notRunningSince := null
+                                      runningSince := runningSince ?: now
+                                      IF NOT torchOn AND now − runningSince ≥ 3 с THEN TORCH ON
+      ELSE                            runningSince := null
+                                      notRunningSince := notRunningSince ?: now
+                                      IF torchOn AND now − notRunningSince ≥ 5 с THEN TORCH OFF
+  R3: IF |a| ≥ 25 AND (lastImpact = null OR now − lastImpact ≥ 10 с)
+                                 THEN lastImpact := now; VIBRATE(ALARM); Snackbar
+  кожне рішення: IF autoMode THEN SmartActuator.execute ELSE лише лог
+```
+
+Потік даних: `MainActivity.onSensorChanged → StepCounterViewModel.samples (SharedFlow, без
+conflation, щоб не загубити одиночний пік удару) → ControlViewModel → DecisionEngine →
+DecisionExecutor → SmartActuator → ActuatorEvent`.
+
+### Вузол керування
+
+```
+devices/{deviceId}/control
+├── led_status: false    віртуальна лампа (за перемикачем — ще й реальний ліхтарик)
+└── vibrate:    false    true → одна вібрація, після чого застосунок записує false
+```
+
+Під час старту застосунок робить `GET control.json`. Якщо вузла немає, він створює його через
+`PUT {"led_status": false, "vibrate": false}`, і вузол одразу з'являється в консолі.
+
+`CloudControlListener` відкриває `GET devices/{id}/control.json` з `Accept: text/event-stream`
+(okhttp-sse, окремий `OkHttpClient` з `readTimeout = 0` і без BODY-логера, який буферизував би
+нескінченну відповідь). Як обробляються події:
+- `put` / `patch` з `{"path": ..., "data": ...}`: path `/` — весь вузол (null означає, що його
+  видалено), `/led_status` або `/vibrate` — одне поле;
+- `keep-alive` ігнорується; `cancel` / `auth_revoked` — запис у лог і стан ERROR;
+- після обриву застосунок перепідключається з backoff 1 → 2 → 4 → 8 → 16 → 30 с (максимум),
+  а щойно `NetworkMonitor` бачить, що мережа повернулася, — одразу.
+
+Стани слухача на картці «Cloud-to-Device»: 🟢 LISTENING, 🔵 CONNECTING, 🟡 RECONNECTING,
+🔴 ERROR, ⚪ NOT_CONFIGURED. Logcat: `tag:CloudControl`. Правила бази з ЛР3 (`.read/.write` для
+`devices/$deviceId`) підходять і для потоку.
+
+### Як тестувати
+
+**Unit-тести** (`./gradlew test`):
+- `DecisionEngineTest` — ціль спрацьовує рівно один раз і знову після reset; RUNNING 2,9 с не
+  вмикає ліхтарик, 3 с вмикає; вимкнення лише після 5 с без RUNNING; короткий провал не вимикає;
+  удар ≥ 25 → тривога, 24,9 — ні; cooldown 10 с;
+- `DecisionExecutorTest` (з `FakeActuator`) — авто-режим виконує рішення, а вимкнений лише логує;
+- `ControlEventParserTest` — put `/` з повним об'єктом і з null, put `/led_status`, patch, keep-alive,
+  cancel/auth_revoked, некоректний JSON, одноразовість vibrate, backoff.
+
+**З консолі Firebase:**
+1. Запустіть застосунок і відкрийте вкладку «Керування». Статус має бути 🟢 «Слухає команди (SSE)».
+   Кнопкою «Копіювати» скопіюйте deviceId.
+2. Firebase Console → Realtime Database → `devices/<deviceId>/control`. Поставте `led_status = true`:
+   лампа на екрані засвітиться жовтим майже миттєво, а в журналі з'явиться подія `Лампа увімк CLOUD`.
+3. Поставте `vibrate = true`: телефон завибрує один раз, і через мить поле в консолі саме
+   повернеться у `false`.
+4. Увімкніть Airplane mode: статус 🟡 «Перепідключення…». Вимкніть — і статус знову 🟢 без очікування backoff.
+5. Локальні правила: потрусіть телефон (або в емуляторі задайте Virtual sensors) до 50 кроків —
+   з'явиться Snackbar «Ціль 50 кроків досягнута». Різкий удар долонею або струс з |a| ≥ 25 запускає
+   тривогу.
+
+### Event-driven (SSE) vs Polling
+
+Під час polling застосунок раз на N секунд сам питає сервер «чи щось змінилося?». Затримка
+реакції дорівнює в середньому N/2. Більшість запитів повертає ті самі дані, тож трафік і батарея
+витрачаються навіть тоді, коли команд немає, а зменшити затримку можна лише частішими запитами.
+У моделі event-driven (Firebase REST Streaming через Server-Sent Events) застосунок тримає одне
+довге HTTP-з'єднання, а сервер сам надсилає подію `put`/`patch` у момент зміни. Затримка
+дорівнює лише мережевій, у простої йдуть тільки рідкі `keep-alive`, а порядок змін зберігається.
+Ціна такого підходу — постійне з'єднання та потреба самому обробляти обриви
+(backoff + реакція на повернення мережі).
+
 ## Структура
 
 ```
 app/src/main/java/com/example/smartstepcounter/
 ├── MainActivity.kt           SensorManager, SensorEventListener, onResume/onPause
 ├── SmartStepApp.kt           Application, тримає AppContainer
-├── AppContainer.kt           Manual DI: BLE-мок, мережа, Firebase API, CloudRepository
+├── AppContainer.kt           Manual DI: BLE-мок, мережа, Firebase API, CloudRepository, актуатори, SSE
 ├── StepCounterViewModel.kt   стан UI (StateFlow), історія сигналу
 ├── sensor/StepDetector.kt    фільтри, детекція кроків, пороги, класифікація
+├── actuator/
+│   ├── ActuatorModels.kt     ActuatorType, EventSource, VibrationPattern, ActuatorEvent, ActuatorState
+│   ├── Actuator.kt           інтерфейс актуаторів (реальний / фейковий)
+│   ├── SmartActuator.kt      вібрація, ліхтарик (апаратний / віртуальний), TorchCallback
+│   ├── ControlSettings.kt    перемикачі авто-режиму та дублювання лампи
+│   └── ControlViewModel.kt   Sensor → DecisionEngine → SmartActuator, журнал подій
+├── decision/
+│   ├── DecisionConfig.kt     пороги R1–R3 з поясненнями
+│   ├── Decision.kt           Rule, DecisionAction, Decision
+│   ├── DecisionEngine.kt     правила R1–R3 (чистий Kotlin)
+│   └── DecisionExecutor.kt   виконання / лише лог при вимкненому авто-режимі
 ├── ble/
 │   ├── BleUuids.kt           GATT-профіль StepHub, команди
 │   ├── BleModels.kt          BleDevice, BleConnectionState, BleLogEntry
@@ -312,10 +430,16 @@ app/src/main/java/com/example/smartstepcounter/
 │   ├── CloudRepository.kt    черга, flush, POST/PUT; NotConfiguredCloudRepository
 │   ├── DeviceIdProvider.kt   стабільний UUID пристрою
 │   ├── SyncChangeFilter.kt   фільтр Δ = 0.5 м/с²
-│   └── CloudSyncViewModel.kt тікер 5 с, миттєва відправка зміни стану
+│   ├── CloudSyncViewModel.kt тікер 5 с, миттєва відправка зміни стану
+│   ├── ControlModels.kt      ControlState, стани слухача, ControlCommand
+│   ├── ControlApi.kt         GET/PUT control, скидання vibrate
+│   ├── ControlEventParser.kt розбір SSE-подій, ControlReducer, Backoff
+│   ├── CloudControlListener.kt SSE-потік, перепідключення
+│   └── CloudCommandHandler.kt  команда → актуатор, vibrate=false
 └── ui/
-    ├── MainScaffold.kt       NavigationBar: «Сенсор» / «Пристрій»
+    ├── MainScaffold.kt       NavigationBar: «Сенсор» / «Пристрій» / «Керування»
     ├── StepCounterScreen.kt  Compose UI + Canvas-індикатори
     ├── DeviceScreen.kt       пошук, підключення, керування, термінал
+    ├── ControlScreen.kt      лампа, ліхтарик, вібрація, авто-режим, статус SSE, журнал
     └── theme/Theme.kt        Material 3 (dynamic color)
 ```

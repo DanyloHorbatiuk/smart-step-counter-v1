@@ -14,9 +14,12 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.smartstepcounter.actuator.ControlViewModel
 import com.example.smartstepcounter.ble.BleViewModel
 import com.example.smartstepcounter.cloud.CloudEvent
 import com.example.smartstepcounter.cloud.CloudSyncViewModel
+import com.example.smartstepcounter.ui.ControlActions
+import com.example.smartstepcounter.ui.ControlScreen
 import com.example.smartstepcounter.ui.DeviceActions
 import com.example.smartstepcounter.ui.DeviceScreen
 import com.example.smartstepcounter.ui.MainScaffold
@@ -46,6 +49,13 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         )
     }
 
+    private val controlViewModel: ControlViewModel by viewModels {
+        ControlViewModel.factory(
+            container = (application as SmartStepApp).container,
+            samples = viewModel.samples,
+        )
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -69,6 +79,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                         snackbarHostState.showSnackbar(message)
                     }
                 }
+                LaunchedEffect(Unit) {
+                    controlViewModel.ruleEvents.collect { snackbarHostState.showSnackbar(it) }
+                }
                 MainScaffold(
                     sensorTab = {
                         StepCounterScreen(
@@ -89,6 +102,17 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                                 onHubPing = bleViewModel::hubPing,
                                 onSimulateLoss = bleViewModel::simulateLoss,
                                 onDisconnect = bleViewModel::disconnect,
+                            ),
+                        )
+                    },
+                    controlTab = {
+                        ControlScreen(
+                            viewModel = controlViewModel,
+                            actions = ControlActions(
+                                onTorch = controlViewModel::toggleTorch,
+                                onVibrate = controlViewModel::vibrate,
+                                onAutoMode = controlViewModel::setAutoMode,
+                                onMirror = controlViewModel::setMirrorLedToTorch,
                             ),
                         )
                     },

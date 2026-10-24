@@ -115,10 +115,6 @@ class StepDetector {
         stepTimes.clear()
     }
 
-    /**
-     * Resets filter history but keeps the step count, e.g. after the app returns
-     * from the background: the time gap would otherwise distort the filters.
-     */
     fun resume() {
         val kept = steps
         reset()

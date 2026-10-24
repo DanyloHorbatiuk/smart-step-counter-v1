@@ -66,6 +66,7 @@ dependencies {
     implementation(libs.retrofit.converter.gson)
     implementation(libs.okhttp)
     implementation(libs.okhttp.logging.interceptor)
+    implementation(libs.okhttp.sse)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)

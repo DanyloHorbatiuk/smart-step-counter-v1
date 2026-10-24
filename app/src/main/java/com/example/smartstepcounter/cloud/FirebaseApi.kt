@@ -1,5 +1,6 @@
 package com.example.smartstepcounter.cloud
 
+import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
@@ -41,9 +42,21 @@ object FirebaseApiFactory {
      * @param debug adds a BODY-level HTTP logger (debug builds only).
      * @return null when [baseUrl] is blank or not a valid http(s) URL.
      */
-    fun create(baseUrl: String, debug: Boolean): FirebaseApi? {
-        val normalized = baseUrl.trim().let { if (it.endsWith("/")) it else "$it/" }
-        val url = normalized.takeIf { baseUrl.isNotBlank() }?.toHttpUrlOrNull() ?: return null
+    fun create(baseUrl: String, debug: Boolean): FirebaseApi? =
+        retrofit(baseUrl, debug)?.create(FirebaseApi::class.java)
+
+    /** Lab 4: remote control endpoints, sharing the same base URL and client settings. */
+    fun createControlApi(baseUrl: String, debug: Boolean): ControlApi? =
+        retrofit(baseUrl, debug)?.create(ControlApi::class.java)
+
+    /** @return the database root with a trailing slash, or null when [baseUrl] is unusable. */
+    fun normalizeUrl(baseUrl: String): HttpUrl? {
+        if (baseUrl.isBlank()) return null
+        return baseUrl.trim().let { if (it.endsWith("/")) it else "$it/" }.toHttpUrlOrNull()
+    }
+
+    private fun retrofit(baseUrl: String, debug: Boolean): Retrofit? {
+        val url = normalizeUrl(baseUrl) ?: return null
 
         val client = OkHttpClient.Builder()
             .connectTimeout(TIMEOUT_S, TimeUnit.SECONDS)
@@ -61,6 +74,5 @@ object FirebaseApiFactory {
             .client(client)
             .addConverterFactory(GsonConverterFactory.create())
             .build()
-            .create(FirebaseApi::class.java)
     }
 }
