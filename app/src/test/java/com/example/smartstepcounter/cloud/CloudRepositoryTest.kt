@@ -1,5 +1,6 @@
 package com.example.smartstepcounter.cloud
 
+import com.example.smartstepcounter.data.local.FakePendingUploadDao
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -14,10 +15,12 @@ import org.junit.Test
 class CloudRepositoryTest {
 
     private val api = FakeFirebaseApi()
+    private val queue = FakePendingUploadDao()
 
     private fun TestScope.newRepository(network: NetworkMonitor) = CloudRepository(
         api = api,
         networkMonitor = network,
+        queue = queue,
         scope = backgroundScope,
         io = StandardTestDispatcher(testScheduler),
         clock = { 1_000L },
@@ -124,5 +127,47 @@ class CloudRepositoryTest {
         runCurrent()
         assertEquals(6L, api.posted.first().timestamp)
         assertEquals(CloudRepository.MAX_PENDING, api.posted.size)
+    }
+
+    @Test
+    fun queueSurvivesRestart() = runTest {
+        // First run: offline, three records land in the table.
+        val firstRun = newRepository(FakeNetworkMonitor(online = false))
+        (1L..3L).forEach { firstRun.upload(reading(it)) }
+        assertEquals(3, queue.rows.value.size)
+        assertTrue(api.posted.isEmpty())
+
+        // "Restart": a new instance over the same table, now with network.
+        val secondRun = newRepository(FakeNetworkMonitor(online = true))
+        runCurrent()
+
+        assertEquals(listOf(1L, 2L, 3L), api.posted.map { it.timestamp })
+        assertTrue(queue.rows.value.isEmpty())
+        assertEquals(CloudStatus.SUCCESS, secondRun.state.value.status)
+        assertEquals(3, secondRun.state.value.sentCount)
+    }
+
+    @Test
+    fun restoredQueueIsReportedWhileOffline() = runTest {
+        val firstRun = newRepository(FakeNetworkMonitor(online = false))
+        (1L..2L).forEach { firstRun.upload(reading(it)) }
+
+        val secondRun = newRepository(FakeNetworkMonitor(online = false))
+        runCurrent()
+
+        assertEquals(CloudStatus.PENDING, secondRun.state.value.status)
+        assertEquals(2, secondRun.state.value.pendingCount)
+    }
+
+    @Test
+    fun rowIsDeletedOnlyAfterSuccess() = runTest {
+        val repo = newRepository(FakeNetworkMonitor(online = true))
+        api.mode = FakeFirebaseApi.Mode.HTTP_500
+        repo.upload(reading(1))
+        assertEquals(1, queue.rows.value.size)
+
+        api.mode = FakeFirebaseApi.Mode.OK
+        repo.upload(reading(2))
+        assertTrue(queue.rows.value.isEmpty())
     }
 }

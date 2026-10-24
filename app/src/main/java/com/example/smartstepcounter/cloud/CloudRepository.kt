@@ -1,6 +1,11 @@
 package com.example.smartstepcounter.cloud
 
+import android.database.sqlite.SQLiteException
 import android.util.Log
+import com.example.smartstepcounter.data.local.PendingUpload
+import com.example.smartstepcounter.data.local.PendingUploadDao
+import com.google.gson.Gson
+import com.google.gson.JsonParseException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -18,25 +23,28 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /**
- * Uploads readings to Firebase with an in-memory offline queue.
+ * Uploads readings to Firebase with a persistent offline queue (Room table pending_uploads).
  *
  * Every record goes through the queue, so records always leave in the order they were
- * produced: a new one never overtakes older pending ones. A record is removed from the
- * queue only after Firebase confirmed it, so a failed request leaves it at the head.
+ * produced (by row id): a new one never overtakes older pending ones. A row is deleted
+ * only after Firebase confirmed it, so a failed request leaves it at the head, and rows
+ * collected offline survive an app restart and are sent on the next start.
  *
+ * @param queue DAO of the pending_uploads table.
  * @param scope app-wide scope; the network observer lives as long as the process.
- * @param io dispatcher for HTTP calls; injected so tests can use a test dispatcher.
+ * @param io dispatcher for HTTP and database calls; injected so tests can use a test dispatcher.
  */
 class CloudRepository(
     private val api: FirebaseApi,
     private val networkMonitor: NetworkMonitor,
+    private val queue: PendingUploadDao,
     scope: CoroutineScope,
     private val io: CoroutineDispatcher = Dispatchers.IO,
     private val clock: () -> Long = System::currentTimeMillis,
     private val logger: (String) -> Unit = { Log.d(TAG, it) },
 ) : ICloudRepository {
 
-    private val queue = ArrayDeque<SensorData>()
+    private val gson = Gson()
 
     /** Serialises flushes so two of them never send the same head record. */
     private val flushMutex = Mutex()
@@ -51,6 +59,14 @@ class CloudRepository(
         // Remember the state at creation so the initial value does not produce a snackbar.
         var wasOnline = networkMonitor.online.value
         if (!wasOnline) _state.update { it.copy(status = CloudStatus.PENDING) }
+        scope.launch {
+            // Rows left by a previous run (the app was closed while offline).
+            val restored = pendingSize()
+            if (restored == 0) return@launch
+            logger("restored $restored pending from the database")
+            _state.update { it.copy(pendingCount = restored) }
+            if (networkMonitor.online.value) flush()
+        }
         scope.launch {
             networkMonitor.online.collect { online ->
                 if (online == wasOnline) return@collect
@@ -73,8 +89,9 @@ class CloudRepository(
         if (networkMonitor.online.value) {
             flush()
         } else {
-            logger("offline, queued ts=${data.timestamp}, queue size=${pendingSize()}")
-            _state.update { it.copy(status = CloudStatus.PENDING, pendingCount = pendingSize()) }
+            val pending = pendingSize()
+            logger("offline, queued ts=${data.timestamp}, queue size=$pending")
+            _state.update { it.copy(status = CloudStatus.PENDING, pendingCount = pending) }
         }
     }
 
@@ -84,40 +101,46 @@ class CloudRepository(
         var lastSent: SensorData? = null
         var failed = false
         while (networkMonitor.online.value) {
-            val next = synchronized(queue) { queue.firstOrNull() } ?: break
+            val head = db(null) { peekOldest() } ?: break
+            val next = decode(head)
+            if (next == null) {
+                db(0) { deleteById(head.id) } // unreadable row: drop it, otherwise it blocks the queue
+                continue
+            }
             _state.update { it.copy(status = CloudStatus.SYNCING) }
             val error = post(next)
             if (error != null) {
-                logger("upload failed: $error, queue size=${pendingSize()}")
+                val pending = pendingSize()
+                logger("upload failed: $error, queue size=$pending")
                 _state.update {
-                    it.copy(status = CloudStatus.ERROR, lastError = error, pendingCount = pendingSize())
+                    it.copy(status = CloudStatus.ERROR, lastError = error, pendingCount = pending)
                 }
                 failed = true
                 break
             }
-            synchronized(queue) {
-                // The head may have been evicted by overflow while the request was in flight.
-                if (queue.firstOrNull() === next) queue.removeFirst()
-            }
+            // The row may have been evicted by overflow while the request was in flight: then a no-op.
+            db(0) { deleteById(head.id) }
             sent++
             lastSent = next
             val now = clock()
+            val pending = pendingSize()
             _state.update {
                 it.copy(
                     lastSuccessAt = now,
                     lastError = null,
                     sentCount = it.sentCount + 1,
-                    pendingCount = pendingSize(),
+                    pendingCount = pending,
                 )
             }
         }
         if (!failed) {
+            val pending = pendingSize()
             val status = when {
-                pendingSize() > 0 -> CloudStatus.PENDING // the network dropped mid-flush
+                pending > 0 -> CloudStatus.PENDING // the network dropped mid-flush
                 sent > 0 -> CloudStatus.SUCCESS
                 else -> _state.value.status.takeUnless { it == CloudStatus.SYNCING } ?: CloudStatus.IDLE
             }
-            _state.update { it.copy(status = status, pendingCount = pendingSize()) }
+            _state.update { it.copy(status = status, pendingCount = pending) }
         }
         lastSent?.let { putStatus(it) }
         sent
@@ -156,15 +179,33 @@ class CloudRepository(
         }
     }
 
-    private fun enqueue(data: SensorData) = synchronized(queue) {
-        queue.addLast(data)
-        while (queue.size > MAX_PENDING) {
-            val dropped = queue.removeFirst()
-            logger("queue full, dropped oldest ts=${dropped.timestamp}")
+    private suspend fun enqueue(data: SensorData) {
+        db(Unit) {
+            insert(PendingUpload(createdAt = clock(), payloadJson = gson.toJson(data)))
+            val dropped = trimToMax(MAX_PENDING)
+            if (dropped > 0) logger("queue full, dropped $dropped oldest")
         }
     }
 
-    private fun pendingSize() = synchronized(queue) { queue.size }
+    private suspend fun pendingSize(): Int = db(0) { size() }
+
+    private fun decode(row: PendingUpload): SensorData? = try {
+        gson.fromJson(row.payloadJson, SensorData::class.java)
+    } catch (e: JsonParseException) {
+        logger("dropping unreadable row ${row.id}: ${e.message}")
+        null
+    }
+
+    /** Runs a queue query on [io]; a database error is logged and [fallback] returned, upload() never throws. */
+    private suspend fun <T> db(fallback: T, block: suspend PendingUploadDao.() -> T): T = withContext(io) {
+        try {
+            queue.block()
+        } catch (e: SQLiteException) {
+            logger("queue database error: ${e.message}")
+            _state.update { it.copy(status = CloudStatus.ERROR, lastError = "SQLiteException: ${e.message}") }
+            fallback
+        }
+    }
 
     companion object {
         const val TAG = "CloudSync"

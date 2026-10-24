@@ -21,6 +21,7 @@ private enum class Tab(val title: String, val icon: String) {
     SENSOR("Сенсор", "👣"),
     DEVICE("Пристрій", "📡"),
     CONTROL("Керування", "🎛️"),
+    ANALYTICS("Аналітика", "📈"),
 }
 
 /**
@@ -33,6 +34,7 @@ fun MainScaffold(
     sensorTab: @Composable () -> Unit,
     deviceTab: @Composable () -> Unit,
     controlTab: @Composable () -> Unit,
+    analyticsTab: @Composable () -> Unit,
     snackbarHostState: SnackbarHostState,
 ) {
     var selected by rememberSaveable { mutableStateOf(Tab.SENSOR) }
@@ -60,6 +62,7 @@ fun MainScaffold(
                 Tab.SENSOR -> sensorTab()
                 Tab.DEVICE -> deviceTab()
                 Tab.CONTROL -> controlTab()
+                Tab.ANALYTICS -> analyticsTab()
             }
         }
     }

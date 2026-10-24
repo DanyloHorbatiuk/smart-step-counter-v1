@@ -15,9 +15,13 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.smartstepcounter.actuator.ControlViewModel
+import com.example.smartstepcounter.analytics.AnalyticsViewModel
 import com.example.smartstepcounter.ble.BleViewModel
 import com.example.smartstepcounter.cloud.CloudEvent
 import com.example.smartstepcounter.cloud.CloudSyncViewModel
+import com.example.smartstepcounter.history.StorageEvent
+import com.example.smartstepcounter.ui.AnalyticsActions
+import com.example.smartstepcounter.ui.AnalyticsScreen
 import com.example.smartstepcounter.ui.ControlActions
 import com.example.smartstepcounter.ui.ControlScreen
 import com.example.smartstepcounter.ui.DeviceActions
@@ -56,6 +60,14 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         )
     }
 
+    // Lab 5: also owns the sensor recorder, so it is touched in setContent on every start.
+    private val analyticsViewModel: AnalyticsViewModel by viewModels {
+        AnalyticsViewModel.factory(
+            container = (application as SmartStepApp).container,
+            steps = viewModel.uiState,
+        )
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -81,6 +93,13 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 }
                 LaunchedEffect(Unit) {
                     controlViewModel.ruleEvents.collect { snackbarHostState.showSnackbar(it) }
+                }
+                LaunchedEffect(Unit) {
+                    analyticsViewModel.events.collect { event ->
+                        when (event) {
+                            is StorageEvent.SpaceFreed -> snackbarHostState.showSnackbar("Мало місця: старі записи видалено")
+                        }
+                    }
                 }
                 MainScaffold(
                     sensorTab = {
@@ -113,6 +132,16 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                                 onVibrate = controlViewModel::vibrate,
                                 onAutoMode = controlViewModel::setAutoMode,
                                 onMirror = controlViewModel::setMirrorLedToTorch,
+                            ),
+                        )
+                    },
+                    analyticsTab = {
+                        val analytics = analyticsViewModel.uiState.collectAsStateWithLifecycle()
+                        AnalyticsScreen(
+                            state = analytics.value,
+                            actions = AnalyticsActions(
+                                onToggleSeries = analyticsViewModel::toggleSeries,
+                                onClearHistory = analyticsViewModel::clearHistory,
                             ),
                         )
                     },

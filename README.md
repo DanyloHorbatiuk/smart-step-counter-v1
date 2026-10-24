@@ -257,7 +257,8 @@ devices/
   тож записи завжди йдуть по порядку. Запис видаляється з черги лише після відповіді 2xx;
   при IOException/таймауті (10 с)/HTTP-помилці статус ERROR, запис лишається першим у черзі
   і повторюється при наступній відправці або поверненні мережі. Після успішної відправки
-  оновлюється `status`.
+  оновлюється `status`. З ЛР5 черга зберігається в Room (`pending_uploads`) і переживає
+  перезапуск застосунку (див. нижче).
 - `AndroidNetworkMonitor` (`registerDefaultNetworkCallback`, INTERNET + VALIDATED): коли мережа
   повертається, черга відправляється автоматично.
 - Усі HTTP-виклики — у корутинах на `Dispatchers.IO`. Logcat: фільтр `tag:CloudSync`.
@@ -393,13 +394,150 @@ devices/{deviceId}/control
 Ціна такого підходу — постійне з'єднання та потреба самому обробляти обриви
 (backoff + реакція на повернення мережі).
 
+## ЛР5: Room та аналітика
+
+Локальне зберігання даних у Room (через KSP) і нова вкладка **«Аналітика»** з графіком часових рядів.
+Архітектура MVVM: жоден Composable не звертається до БД напряму.
+
+```
+AnalyticsScreen (View, Compose)
+        │  StateFlow<AnalyticsUiState>, toggleSeries(), clearHistory()
+        ▼
+AnalyticsViewModel ── SensorRecorder (тікер + фільтр + примусовий запис)
+        │  Flow / suspend
+        ▼
+SensorHistoryRepository (app singleton, Dispatchers.IO, обробка SQLiteException)
+        │
+        ▼
+SensorRecordDao / ActuatorEventDao ──► AppDatabase (Room, smart_step.db)
+                                              ▲
+CloudRepository ──► PendingUploadDao ─────────┘
+```
+
+Версії: Room 2.6.1, KSP 2.0.21-1.0.28, Vico 2.0.3 (`compose-m3`). Vico 2.0.3 — остання версія,
+сумісна з Compose BOM 2024.12.01 і Kotlin 2.0.21. Версії 2.1+ тягнуть Compose 1.8 та Kotlin stdlib 2.1.21+.
+
+### Схема БД (version 1, `app/schemas/.../1.json`)
+
+**sensor_records**: історія акселерометра
+
+| Поле | Тип Kotlin → SQLite | Опис |
+|---|---|---|
+| `id` | Long → INTEGER PK autoincrement | |
+| `timestamp` | Long → INTEGER, **індекс** | час, мс від epoch |
+| `sensorValue` | Float → REAL | \|a\| з гравітацією, м/с² |
+| `x`, `y`, `z` | Float → REAL | осі, м/с² |
+| `rms` | Float → REAL | RMS динамічного прискорення |
+| `steps` | Int → INTEGER | лічильник кроків |
+| `state` | String → TEXT | `MotionState.name` (STILL/WALKING/RUNNING) |
+| `actionTriggered` | Boolean → INTEGER 0/1 | у цей момент спрацював актуатор |
+
+**actuator_events**: історія спрацювань з ЛР4
+
+| Поле | Тип | Опис |
+|---|---|---|
+| `id` | Long → INTEGER PK | |
+| `timestamp` | Long → INTEGER, **індекс** | |
+| `actuator` | String → TEXT | `ActuatorType.name` (TORCH/VIBRATION/LAMP) |
+| `isOn` | Boolean → INTEGER | |
+| `source` | String → TEXT | `EventSource.name` (AUTO/MANUAL/CLOUD) |
+| `reason` | String → TEXT | правило / причина |
+
+**pending_uploads**: персистентна хмарна черга
+
+| Поле | Тип | Опис |
+|---|---|---|
+| `id` | Long → INTEGER PK | порядок FIFO |
+| `createdAt` | Long → INTEGER | час постановки в чергу |
+| `payloadJson` | String → TEXT | `SensorData`, серіалізований Gson |
+
+Таблиці між собою не пов'язані зовнішніми ключами: це три незалежні журнали. Enum-и зберігаються
+рядками (`name`), тому TypeConverters не потрібні.
+
+### Політика запису
+
+- `SensorRecorder` раз на `recordIntervalMs` (1000 мс за замовчуванням) бере поточний snapshot і пише
+  його в БД **лише при суттєвій зміні**. Для цього використовується той самий `SyncChangeFilter`, що й
+  у ЛР3 (Δ осі ≥ 0.5 м/с², зміна кроків або стану). Телефон, що лежить на столі, БД не заповнює.
+- Коли спрацьовує будь-який актуатор (AUTO, MANUAL чи CLOUD), запис робиться **примусово**, в обхід
+  фільтра, з `actionTriggered = true`. На графіку така точка позначена червоним маркером. Події з
+  replay-кешу `SmartActuator` (до старту запису) ігноруються.
+- `recordIntervalMs` — це `StateFlow`, а `setRecordInterval(ms)` (мінімум 100 мс) змінює його в
+  рантаймі: тікер перезапускається одразу. У ЛР6 через нього ML-модель прискорюватиме запис під час бігу.
+- Кожна `ActuatorEvent` записується в `actuator_events` в app-scope, незалежно від відкритої вкладки.
+- Усі запити до БД виконуються через suspend-функції DAO або Flow на `Dispatchers.IO`.
+
+### Політика зберігання
+
+- Не більше **20 000** записів сенсора (близько 5,5 год при 1 запис/с) і не старші **24 год**.
+  Події актуаторів теж зберігаються не довше 24 год.
+- Очищення (`deleteOlderThan` + `trimToMaxRows`) запускається одразу після старту, а далі раз на хвилину
+  у фоновій корутині.
+- **Нестача місця.** `SQLiteFullException` перехоплюється. Статус сховища стає `FULL`, таблиця
+  агресивно обрізається до 2 000 найновіших записів, і з'являється Snackbar «Мало місця: старі записи
+  видалено». Будь-яка інша `SQLiteException` переводить статус у `ERROR`. Застосунок не падає, а
+  Flow-запити повертають порожні дані. Після наступного успішного очищення статус повертається в `OK`.
+  Стан сховища — `StateFlow<StorageState>`.
+
+### Вкладка «Аналітика»
+
+- Лінійний графік (Vico) останніх **50** записів. Дані йдуть Flow з Room, тож графік оновлюється в
+  реальному часі. Вісь X — час `HH:mm:ss`: точки розставлено за порядковим номером, а підпис показує
+  час запису. Через фільтр між записами бувають паузи, і без цього вісь розтягувалася б на порожні
+  проміжки. Вісь Y — значення в м/с².
+- Перемикачі серій **X, Y, Z** (увімкнені за замовчуванням: поворот телефона дає хвилі), **|a|**,
+  **RMS**. Червоні маркери позначають точки з `actionTriggered = true`.
+- Під графіком: кількість записів у БД, інтервал запису, стан сховища й останні 20 подій актуаторів
+  з БД. Історія доступна без інтернету.
+- Кнопка «Очистити історію» з діалогом підтвердження видаляє `sensor_records` і `actuator_events`.
+  Хмарну чергу вона не чіпає.
+
+### Персистентна хмарна черга
+
+`CloudRepository` зберігає чергу в `pending_uploads`, а не в `ArrayDeque`:
+`upload` → `insert` + `trimToMax(200)`; `flush` → `peekOldest()` → POST → `deleteById` **лише після 2xx**.
+Порядок відправки визначає `id`. Записи, накопичені в офлайні, переживають закриття застосунку.
+На старті репозиторій читає їх із таблиці (статус PENDING і `pendingCount`) і відправляє одразу,
+якщо мережа є, або коли вона з'явиться. Статуси, Snackbar-и та flush працюють так само, як у ЛР3.
+
+### Database Inspector
+
+1. Запустіть debug-збірку на емуляторі або пристрої (API 26+) з Android Studio.
+2. **View → Tool Windows → App Inspection**, вкладка **Database Inspector**, виберіть процес
+   `com.example.smartstepcounter`.
+3. Відкрийте `smart_step.db` → `sensor_records` / `actuator_events` / `pending_uploads`. Увімкніть
+   **Live updates**, щоб бачити нові рядки, або виконайте SQL, наприклад
+   `SELECT * FROM sensor_records WHERE actionTriggered = 1 ORDER BY timestamp DESC`.
+
+### Як тестувати
+
+```
+./gradlew test                         # JVM
+./gradlew connectedDebugAndroidTest    # DAO на емуляторі (in-memory Room)
+```
+
+- `SensorRecorderTest`: запис раз на інтервал, фільтр (шум < 0.5 не пишеться), пауза сенсора,
+  примусовий запис з `actionTriggered`, ігнорування replay, зміна інтервалу на 200 мс.
+- `SensorHistoryRepositoryTest`: видалення записів, старших за 24 год, ліміт 20 000, фонове очищення
+  раз на хвилину, запис подій актуаторів, `SQLiteFullException` → FULL + обрізання + подія,
+  `SQLiteException` → ERROR → OK, обмеження інтервалу, очищення історії.
+- `CloudRepositoryTest` (фейковий `PendingUploadDao`): тести ЛР3, а також перевірки, що черга переживає
+  «перезапуск» (новий екземпляр на тій самій таблиці відправляє старі записи по порядку) і що рядок
+  видаляється лише після успіху.
+- androidTest: `SensorRecordDaoTest` (порядок `observeLatest`, `trimToMaxRows`, `deleteOlderThan`),
+  `PendingUploadDaoTest` (FIFO, `trimToMax`), `ActuatorEventDaoTest`.
+
+Вручну: на вкладці «Аналітика» покрутіть телефон, і лінії X/Y/Z підуть хвилями. Увімкніть ліхтарик на
+«Керуванні», і на графіку з'явиться маркер. Далі увімкніть авіарежим, походіть, закрийте застосунок,
+вимкніть авіарежим і відкрийте його знову: черга відправиться, і з'явиться Snackbar.
+
 ## Структура
 
 ```
 app/src/main/java/com/example/smartstepcounter/
 ├── MainActivity.kt           SensorManager, SensorEventListener, onResume/onPause
 ├── SmartStepApp.kt           Application, тримає AppContainer
-├── AppContainer.kt           Manual DI: BLE-мок, мережа, Firebase API, CloudRepository, актуатори, SSE
+├── AppContainer.kt           Manual DI: Room, BLE-мок, мережа, Firebase API, CloudRepository, актуатори, SSE, історія
 ├── StepCounterViewModel.kt   стан UI (StateFlow), історія сигналу
 ├── sensor/StepDetector.kt    фільтри, детекція кроків, пороги, класифікація
 ├── actuator/
@@ -408,6 +546,18 @@ app/src/main/java/com/example/smartstepcounter/
 │   ├── SmartActuator.kt      вібрація, ліхтарик (апаратний / віртуальний), TorchCallback
 │   ├── ControlSettings.kt    перемикачі авто-режиму та дублювання лампи
 │   └── ControlViewModel.kt   Sensor → DecisionEngine → SmartActuator, журнал подій
+├── data/local/
+│   ├── SensorRecord.kt       @Entity sensor_records
+│   ├── ActuatorEventEntity.kt @Entity actuator_events
+│   ├── PendingUpload.kt      @Entity pending_uploads
+│   ├── *Dao.kt               SensorRecordDao, ActuatorEventDao, PendingUploadDao
+│   └── AppDatabase.kt        RoomDatabase v1
+├── history/
+│   ├── ISensorHistoryRepository.kt / SensorHistoryRepository.kt  запис, очищення, SQLiteException
+│   ├── SensorRecorder.kt     тікер recordIntervalMs + фільтр + примусовий запис
+│   ├── RetentionPolicy.kt    20 000 записів / 24 год / раз на хвилину
+│   └── StorageState.kt       OK / FULL / ERROR, події для Snackbar
+├── analytics/AnalyticsViewModel.kt  стан вкладки «Аналітика», серії графіка
 ├── decision/
 │   ├── DecisionConfig.kt     пороги R1–R3 з поясненнями
 │   ├── Decision.kt           Rule, DecisionAction, Decision
@@ -427,7 +577,7 @@ app/src/main/java/com/example/smartstepcounter/
 │   ├── CloudSyncState.kt     статуси, стан синхронізації, події для Snackbar
 │   ├── NetworkMonitor.kt     ConnectivityManager → StateFlow<Boolean>
 │   ├── ICloudRepository.kt   інтерфейс шару
-│   ├── CloudRepository.kt    черга, flush, POST/PUT; NotConfiguredCloudRepository
+│   ├── CloudRepository.kt    черга в Room, flush, POST/PUT; NotConfiguredCloudRepository
 │   ├── DeviceIdProvider.kt   стабільний UUID пристрою
 │   ├── SyncChangeFilter.kt   фільтр Δ = 0.5 м/с²
 │   ├── CloudSyncViewModel.kt тікер 5 с, миттєва відправка зміни стану
@@ -437,9 +587,11 @@ app/src/main/java/com/example/smartstepcounter/
 │   ├── CloudControlListener.kt SSE-потік, перепідключення
 │   └── CloudCommandHandler.kt  команда → актуатор, vibrate=false
 └── ui/
-    ├── MainScaffold.kt       NavigationBar: «Сенсор» / «Пристрій» / «Керування»
+    ├── MainScaffold.kt       NavigationBar: «Сенсор» / «Пристрій» / «Керування» / «Аналітика»
     ├── StepCounterScreen.kt  Compose UI + Canvas-індикатори
     ├── DeviceScreen.kt       пошук, підключення, керування, термінал
     ├── ControlScreen.kt      лампа, ліхтарик, вібрація, авто-режим, статус SSE, журнал
+    ├── AnalyticsScreen.kt    графік Vico, перемикачі серій, статистика БД, історія актуаторів
     └── theme/Theme.kt        Material 3 (dynamic color)
+app/schemas/                  експортована схема Room (JSON)
 ```

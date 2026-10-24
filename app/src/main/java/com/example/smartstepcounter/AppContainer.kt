@@ -19,6 +19,8 @@ import com.example.smartstepcounter.cloud.IControlListener
 import com.example.smartstepcounter.cloud.NetworkMonitor
 import com.example.smartstepcounter.cloud.NotConfiguredCloudRepository
 import com.example.smartstepcounter.cloud.NotConfiguredControlListener
+import com.example.smartstepcounter.data.local.AppDatabase
+import com.example.smartstepcounter.history.SensorHistoryRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -29,6 +31,9 @@ import kotlinx.coroutines.SupervisorJob
  */
 class AppContainer(context: Context) {
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    // Lab 5: one Room database per process; Room opens it lazily on the first query (off the main thread).
+    val database: AppDatabase = AppDatabase.create(context)
 
     val connector = MockBleConnector(appScope)
     val scanner = MockBleScanner(connector)
@@ -41,7 +46,7 @@ class AppContainer(context: Context) {
     val api: FirebaseApi? = FirebaseApiFactory.create(BuildConfig.FIREBASE_DB_URL, debug = BuildConfig.DEBUG)
 
     val cloudRepository: ICloudRepository =
-        api?.let { CloudRepository(it, networkMonitor, appScope) }
+        api?.let { CloudRepository(it, networkMonitor, database.pendingUploadDao(), appScope) }
             ?: NotConfiguredCloudRepository().also {
                 Log.w(CloudRepository.TAG, "FIREBASE_DB_URL is not set, cloud sync disabled")
             }
@@ -51,6 +56,12 @@ class AppContainer(context: Context) {
     val controlSettings = ControlSettings()
 
     val controlListener: IControlListener = createControlListener()
+
+    // Lab 5: local history. Subscribed right after the actuator is created, so its replay cache is empty.
+    val historyRepository = SensorHistoryRepository(
+        sensorDao = database.sensorRecordDao(),
+        actuatorDao = database.actuatorEventDao(),
+    ).also { it.start(appScope, actuator.events) }
 
     private fun createControlListener(): IControlListener {
         val baseUrl = FirebaseApiFactory.normalizeUrl(BuildConfig.FIREBASE_DB_URL)
