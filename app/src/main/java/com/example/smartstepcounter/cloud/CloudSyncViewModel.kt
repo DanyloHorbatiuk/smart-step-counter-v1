@@ -7,6 +7,8 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.example.smartstepcounter.AppContainer
 import com.example.smartstepcounter.StepCounterUiState
+import com.example.smartstepcounter.ml.AiUiState
+import com.example.smartstepcounter.ml.Prediction
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -26,12 +28,14 @@ import kotlinx.coroutines.launch
  * - a motion state change, sent immediately but not more often than [STATE_MIN_INTERVAL_MS].
  *
  * @param steps state of [com.example.smartstepcounter.StepCounterViewModel]; read-only.
+ * @param ai current smoothed ML prediction (Lab 7), added to every reading.
  */
 class CloudSyncViewModel(
     private val repository: ICloudRepository,
     private val steps: StateFlow<StepCounterUiState>,
     private val deviceId: String,
     private val clock: () -> Long = System::currentTimeMillis,
+    private val ai: () -> Prediction? = { null },
 ) : ViewModel() {
 
     val state: StateFlow<CloudSyncState> = repository.state
@@ -66,7 +70,7 @@ class CloudSyncViewModel(
         val snapshot = ui.snapshot
         if (!filter.shouldSend(snapshot)) return
         filter.markSent(snapshot)
-        repository.upload(SensorData.from(snapshot, deviceId, clock()))
+        repository.upload(SensorData.from(snapshot, deviceId, clock(), ai()))
     }
 
     companion object {
@@ -82,12 +86,14 @@ class CloudSyncViewModel(
         fun factory(
             container: AppContainer,
             steps: StateFlow<StepCounterUiState>,
+            ai: StateFlow<AiUiState>,
         ): ViewModelProvider.Factory = viewModelFactory {
             initializer {
                 CloudSyncViewModel(
                     repository = container.cloudRepository,
                     steps = steps,
                     deviceId = container.deviceId,
+                    ai = { ai.value.insight.smoothed },
                 )
             }
         }

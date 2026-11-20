@@ -79,6 +79,9 @@ class SensorHistoryRepository(
     override fun observeLatest(limit: Int): Flow<List<SensorRecord>> =
         sensorDao.observeLatest(limit).guard(emptyList())
 
+    override fun observeNewest(limit: Int): Flow<List<SensorRecord>> =
+        sensorDao.observeNewest(limit).guard(emptyList())
+
     override fun observeCount(): Flow<Int> = sensorDao.count().guard(0)
 
     override fun observeActuatorEvents(limit: Int): Flow<List<ActuatorEventEntity>> =

@@ -18,4 +18,7 @@ interface Actuator {
     fun toggleFlashlight(on: Boolean, source: EventSource, reason: String)
 
     fun setVirtualLamp(on: Boolean, source: EventSource, reason: String)
+
+    /** Lab 7: writes [command] to the BLE hub; without a link the event is logged with on = false. */
+    fun sendBleCommand(command: String, source: EventSource, reason: String)
 }

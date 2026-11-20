@@ -18,6 +18,7 @@ import androidx.compose.ui.Modifier
 
 // Emoji icons avoid pulling in material-icons-extended.
 private enum class Tab(val title: String, val icon: String) {
+    HOME("Головна", "🏠"),
     SENSOR("Сенсор", "👣"),
     DEVICE("Пристрій", "📡"),
     CONTROL("Керування", "🎛️"),
@@ -31,13 +32,14 @@ private enum class Tab(val title: String, val icon: String) {
  */
 @Composable
 fun MainScaffold(
+    homeTab: @Composable () -> Unit,
     sensorTab: @Composable () -> Unit,
     deviceTab: @Composable () -> Unit,
     controlTab: @Composable () -> Unit,
     analyticsTab: @Composable () -> Unit,
     snackbarHostState: SnackbarHostState,
 ) {
-    var selected by rememberSaveable { mutableStateOf(Tab.SENSOR) }
+    var selected by rememberSaveable { mutableStateOf(Tab.HOME) }
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         bottomBar = {
@@ -59,6 +61,7 @@ fun MainScaffold(
                 .consumeWindowInsets(inner)
         ) {
             when (selected) {
+                Tab.HOME -> homeTab()
                 Tab.SENSOR -> sensorTab()
                 Tab.DEVICE -> deviceTab()
                 Tab.CONTROL -> controlTab()

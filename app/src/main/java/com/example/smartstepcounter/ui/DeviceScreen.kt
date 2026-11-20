@@ -76,7 +76,7 @@ data class DeviceActions(
     val onDisconnect: () -> Unit,
 )
 
-private fun BleConnectionState.label() = when (this) {
+internal fun BleConnectionState.label() = when (this) {
     BleConnectionState.DISCONNECTED -> "Відключено"
     BleConnectionState.SCANNING -> "Пошук…"
     BleConnectionState.CONNECTING -> "Підключення…"
@@ -84,7 +84,7 @@ private fun BleConnectionState.label() = when (this) {
     BleConnectionState.DATA_TRANSFER -> "Передача даних"
 }
 
-private fun BleConnectionState.color() = when (this) {
+internal fun BleConnectionState.color() = when (this) {
     BleConnectionState.DISCONNECTED -> Color(0xFF9E9E9E)
     BleConnectionState.SCANNING -> Color(0xFF42A5F5)
     BleConnectionState.CONNECTING -> Color(0xFFFFA726)

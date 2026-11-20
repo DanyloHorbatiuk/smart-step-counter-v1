@@ -25,6 +25,9 @@ import com.example.smartstepcounter.ui.AnalyticsActions
 import com.example.smartstepcounter.ui.AnalyticsScreen
 import com.example.smartstepcounter.ui.ControlActions
 import com.example.smartstepcounter.ui.ControlScreen
+import com.example.smartstepcounter.ui.DashboardActions
+import com.example.smartstepcounter.ui.DashboardScreen
+import com.example.smartstepcounter.ui.DashboardState
 import com.example.smartstepcounter.ui.DeviceActions
 import com.example.smartstepcounter.ui.DeviceScreen
 import com.example.smartstepcounter.ui.MainScaffold
@@ -51,6 +54,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         CloudSyncViewModel.factory(
             container = (application as SmartStepApp).container,
             steps = viewModel.uiState,
+            ai = aiViewModel.uiState,
         )
     }
 
@@ -58,6 +62,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         ControlViewModel.factory(
             container = (application as SmartStepApp).container,
             samples = viewModel.samples,
+            ai = aiViewModel.uiState,
         )
     }
 
@@ -66,6 +71,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         AnalyticsViewModel.factory(
             container = (application as SmartStepApp).container,
             steps = viewModel.uiState,
+            ai = aiViewModel.uiState,
         )
     }
 
@@ -116,6 +122,27 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     }
                 }
                 MainScaffold(
+                    homeTab = {
+                        val recent = analyticsViewModel.recent.collectAsStateWithLifecycle()
+                        val actuator = controlViewModel.actuatorState.collectAsStateWithLifecycle()
+                        val autoMode = controlViewModel.autoMode.collectAsStateWithLifecycle()
+                        DashboardScreen(
+                            state = DashboardState(
+                                ai = aiState.value,
+                                steps = state.value.snapshot.steps,
+                                recent = recent.value,
+                                cloud = cloudState.value,
+                                ble = bleState.value.connection,
+                                actuator = actuator.value,
+                                autoMode = autoMode.value,
+                            ),
+                            actions = DashboardActions(
+                                onVibrate = controlViewModel::vibrate,
+                                onTorch = controlViewModel::toggleTorch,
+                                onAutoMode = controlViewModel::setAutoMode,
+                            ),
+                        )
+                    },
                     sensorTab = {
                         StepCounterScreen(
                             state = state.value,
@@ -147,6 +174,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                                 onVibrate = controlViewModel::vibrate,
                                 onAutoMode = controlViewModel::setAutoMode,
                                 onMirror = controlViewModel::setMirrorLedToTorch,
+                                onAddRule = controlViewModel::addSmartRule,
+                                onRuleEnabled = controlViewModel::setSmartRuleEnabled,
+                                onDeleteRule = controlViewModel::deleteSmartRule,
                             ),
                         )
                     },

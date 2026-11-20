@@ -11,6 +11,11 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import android.util.Log
+import com.example.smartstepcounter.ble.BleUuids
+import com.example.smartstepcounter.ble.IBleConnector
+import com.example.smartstepcounter.ble.isLinked
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -25,9 +30,14 @@ import kotlinx.coroutines.flow.update
  * Without a flash (most emulators) the torch degrades to a virtual one: the state is kept
  * and shown in the UI, nothing is sent to the hardware. App-wide singleton (AppContainer),
  * so the torch callback is registered once.
+ *
+ * Lab 7: the Mock-BLE hub is one more executive device; [ble] writes go to its COMMAND
+ * characteristic in [scope].
  */
 class SmartActuator(
     context: Context,
+    private val ble: IBleConnector,
+    private val scope: CoroutineScope,
     private val clock: () -> Long = System::currentTimeMillis,
 ) : Actuator {
 
@@ -103,6 +113,18 @@ class SmartActuator(
     override fun setVirtualLamp(on: Boolean, source: EventSource, reason: String) {
         _state.update { it.copy(virtualLampOn = on) }
         emit(ActuatorType.LAMP, on, source, reason)
+    }
+
+    override fun sendBleCommand(command: String, source: EventSource, reason: String) {
+        if (!ble.state.value.isLinked) {
+            Log.w(TAG, "BLE not connected, \"$command\" is only logged")
+            emit(ActuatorType.BLE, on = false, source, "$command — $reason (BLE не підключено)")
+            return
+        }
+        scope.launch {
+            val sent = ble.sendData(command, BleUuids.COMMAND)
+            emit(ActuatorType.BLE, on = sent, source, "$command — $reason" + if (sent) "" else " (запис не вдався)")
+        }
     }
 
     private fun fallBackToVirtual(why: String) {

@@ -1,7 +1,14 @@
 package com.example.smartstepcounter.actuator
 
 /** Executive devices the app can drive. */
-enum class ActuatorType { TORCH, VIBRATION, LAMP }
+enum class ActuatorType {
+    TORCH,
+    VIBRATION,
+    LAMP,
+
+    /** Lab 7: a command written to the COMMAND characteristic of the Mock-BLE hub. */
+    BLE,
+}
 
 /** Who requested an actuator action. */
 enum class EventSource {
@@ -16,6 +23,9 @@ enum class EventSource {
 
     /** The on-device ML classifier (Lab 6), see [com.example.smartstepcounter.decision.AiRules]. */
     AI,
+
+    /** A user-defined Smart rule (Lab 7), see [com.example.smartstepcounter.decision.SmartRuleEvaluator]. */
+    SMART,
 }
 
 /**

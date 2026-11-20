@@ -52,7 +52,7 @@ class AppContainer(context: Context) {
             }
 
     // Lab 4: actuators and Cloud-to-Device control.
-    val actuator: Actuator = SmartActuator(context)
+    val actuator: Actuator = SmartActuator(context, connector, appScope)
     val controlSettings = ControlSettings()
 
     val controlListener: IControlListener = createControlListener()

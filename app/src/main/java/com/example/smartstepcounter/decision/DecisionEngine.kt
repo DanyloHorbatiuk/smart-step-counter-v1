@@ -29,7 +29,7 @@ class DecisionEngine(val config: DecisionConfig = DecisionConfig()) {
 
     /** @param nowMs monotonic time, ms (e.g. SystemClock.elapsedRealtime). */
     fun evaluate(snapshot: StepSnapshot, nowMs: Long): List<Decision> =
-        listOfNotNull(goalRule(snapshot), runTorchRule(snapshot, nowMs), impactRule(snapshot, nowMs))
+        listOfNotNull(goalRule(snapshot), runTorchRule(snapshot, nowMs)) + impactRule(snapshot, nowMs)
 
     /** R1: once per crossing of the goal; re-armed when the counter is reset below it. */
     private fun goalRule(s: StepSnapshot): Decision? {
@@ -81,20 +81,33 @@ class DecisionEngine(val config: DecisionConfig = DecisionConfig()) {
         return null
     }
 
-    /** R3: |a| above the threshold, at most once per [DecisionConfig.impactCooldownMs]. */
-    private fun impactRule(s: StepSnapshot, now: Long): Decision? {
-        if (s.magnitude < config.impactThreshold) return null
+    /**
+     * R3: |a| above the threshold, at most once per [DecisionConfig.impactCooldownMs].
+     * A critical state (Lab 7): vibration alarm plus an ALARM command to the BLE hub.
+     */
+    private fun impactRule(s: StepSnapshot, now: Long): List<Decision> {
+        if (s.magnitude < config.impactThreshold) return emptyList()
         val last = lastImpactAt
-        if (last != null && now - last < config.impactCooldownMs) return null
+        if (last != null && now - last < config.impactCooldownMs) return emptyList()
         lastImpactAt = now
         val g = String.format(Locale.US, "%.1f", s.magnitude)
-        return Decision(
-            rule = Rule.R3_IMPACT,
-            actuator = ActuatorType.VIBRATION,
-            action = DecisionAction.ACTIVATE,
-            reason = "R3: |a|=$g >= ${config.impactThreshold} m/s²",
-            message = "Різкий удар ($g м/с²) — тривога!",
-            pattern = VibrationPattern.ALARM,
+        val reason = "R3: |a|=$g >= ${config.impactThreshold} m/s²"
+        return listOf(
+            Decision(
+                rule = Rule.R3_IMPACT,
+                actuator = ActuatorType.VIBRATION,
+                action = DecisionAction.ACTIVATE,
+                reason = reason,
+                message = "Різкий удар ($g м/с²) — тривога!",
+                pattern = VibrationPattern.ALARM,
+            ),
+            Decision(
+                rule = Rule.R3_IMPACT,
+                actuator = ActuatorType.BLE,
+                action = DecisionAction.ACTIVATE,
+                reason = reason,
+                message = "BLE: тривогу надіслано на хаб",
+            ),
         )
     }
 }

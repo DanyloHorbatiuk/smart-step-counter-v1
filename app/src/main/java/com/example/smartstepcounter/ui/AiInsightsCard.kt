@@ -38,7 +38,7 @@ import kotlin.math.roundToInt
 
 private val UK = Locale.forLanguageTag("uk-UA")
 
-private fun AiLabel.color() = when (this) {
+internal fun AiLabel.color() = when (this) {
     AiLabel.STILL -> StillColor
     AiLabel.WALKING -> WalkingColor
     AiLabel.RUNNING -> RunningColor

@@ -7,8 +7,11 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 
-/** Records every call instead of touching hardware. */
-class FakeActuator : Actuator {
+/**
+ * Records every call instead of touching hardware.
+ * @param onBle optional forwarding of BLE commands (e.g. to a MockBleConnector).
+ */
+class FakeActuator(private val onBle: (String) -> Unit = {}) : Actuator {
     private val _state = MutableStateFlow(ActuatorState(torchIsVirtual = true, vibratorAvailable = true))
     override val state: StateFlow<ActuatorState> = _state.asStateFlow()
     override val events: SharedFlow<ActuatorEvent> = MutableSharedFlow(replay = 30)
@@ -29,5 +32,13 @@ class FakeActuator : Actuator {
     override fun setVirtualLamp(on: Boolean, source: EventSource, reason: String) {
         _state.update { it.copy(virtualLampOn = on) }
         recorded += ActuatorEvent(0, ActuatorType.LAMP, on, source, reason)
+    }
+
+    val bleCommands = mutableListOf<String>()
+
+    override fun sendBleCommand(command: String, source: EventSource, reason: String) {
+        bleCommands += command
+        onBle(command)
+        recorded += ActuatorEvent(0, ActuatorType.BLE, true, source, reason)
     }
 }

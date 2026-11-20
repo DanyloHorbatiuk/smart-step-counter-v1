@@ -131,7 +131,7 @@ private fun SectionCard(title: String, content: @Composable () -> Unit) {
     }
 }
 
-private fun CloudStatus.label() = when (this) {
+internal fun CloudStatus.label() = when (this) {
     CloudStatus.NOT_CONFIGURED -> "Хмара не налаштована"
     CloudStatus.IDLE -> "Очікування даних"
     CloudStatus.SYNCING -> "Синхронізація…"
@@ -140,7 +140,7 @@ private fun CloudStatus.label() = when (this) {
     CloudStatus.PENDING -> "Офлайн — дані в черзі"
 }
 
-private fun CloudStatus.color() = when (this) {
+internal fun CloudStatus.color() = when (this) {
     CloudStatus.SUCCESS -> Color(0xFF2E7D32)
     CloudStatus.ERROR -> Color(0xFFC62828)
     CloudStatus.PENDING -> Color(0xFFF9A825)

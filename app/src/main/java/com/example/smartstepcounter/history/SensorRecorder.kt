@@ -4,6 +4,7 @@ import com.example.smartstepcounter.StepCounterUiState
 import com.example.smartstepcounter.actuator.ActuatorEvent
 import com.example.smartstepcounter.cloud.SyncChangeFilter
 import com.example.smartstepcounter.data.local.SensorRecord
+import com.example.smartstepcounter.ml.Prediction
 import com.example.smartstepcounter.sensor.StepSnapshot
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -24,12 +25,14 @@ import kotlinx.coroutines.launch
  * Both run in the caller's scope; with the main dispatcher check-and-mark is not racy.
  *
  * @param steps state of [com.example.smartstepcounter.StepCounterViewModel]; read-only.
+ * @param ai current smoothed ML prediction (Lab 7), stored with every record.
  */
 class SensorRecorder(
     private val repository: ISensorHistoryRepository,
     private val steps: StateFlow<StepCounterUiState>,
     private val actuatorEvents: Flow<ActuatorEvent>,
     private val clock: () -> Long = System::currentTimeMillis,
+    private val ai: () -> Prediction? = { null },
 ) {
     private val filter = SyncChangeFilter()
 
@@ -68,15 +71,20 @@ class SensorRecorder(
         repository.insertRecord(ui.snapshot.toRecord(timestamp, actionTriggered = true))
     }
 
-    private fun StepSnapshot.toRecord(timestamp: Long, actionTriggered: Boolean) = SensorRecord(
-        timestamp = timestamp,
-        sensorValue = magnitude,
-        x = x,
-        y = y,
-        z = z,
-        rms = rms,
-        steps = steps,
-        state = state.name,
-        actionTriggered = actionTriggered,
-    )
+    private fun StepSnapshot.toRecord(timestamp: Long, actionTriggered: Boolean): SensorRecord {
+        val prediction = ai()
+        return SensorRecord(
+            timestamp = timestamp,
+            sensorValue = magnitude,
+            x = x,
+            y = y,
+            z = z,
+            rms = rms,
+            steps = steps,
+            state = state.name,
+            actionTriggered = actionTriggered,
+            aiLabel = prediction?.label?.name,
+            aiConfidence = prediction?.confidence,
+        )
+    }
 }

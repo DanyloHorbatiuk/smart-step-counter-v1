@@ -57,7 +57,8 @@ class AiRulesTest {
     fun twoShakeWindowsRaiseAlarmAndTorch() {
         rules.shakeRule(prediction(AiLabel.SHAKE, 0.85f), 0)
         val decisions = rules.shakeRule(prediction(AiLabel.SHAKE, 0.91f), 500)
-        assertEquals(listOf(ActuatorType.VIBRATION, ActuatorType.TORCH), decisions.map { it.actuator })
+        assertEquals(listOf(ActuatorType.VIBRATION, ActuatorType.TORCH, ActuatorType.BLE), decisions.map { it.actuator })
+        assertEquals("ALARM:R4_AI_ANOMALY", decisions[2].bleCommand)
         assertTrue(decisions.all { it.source == EventSource.AI && it.rule == Rule.R4_AI_ANOMALY })
         assertTrue(decisions.all { it.action == DecisionAction.ACTIVATE })
         assertEquals(VibrationPattern.ALARM, decisions[0].pattern)
@@ -73,7 +74,7 @@ class AiRulesTest {
             assertTrue("t=$it", rules.shakeRule(prediction(AiLabel.SHAKE, 0.9f), it).isEmpty())
         }
         // Cooldown over and shaking continues: a new alarm.
-        assertEquals(2, rules.shakeRule(prediction(AiLabel.SHAKE, 0.9f), 10_500).size)
+        assertEquals(3, rules.shakeRule(prediction(AiLabel.SHAKE, 0.9f), 10_500).size)
         // Calm during the cooldown keeps the torch on, afterwards it goes off once.
         assertTrue(rules.shakeRule(prediction(AiLabel.STILL, 0.9f), 15_000).isEmpty())
         val off = rules.shakeRule(prediction(AiLabel.STILL, 0.9f), 20_500)

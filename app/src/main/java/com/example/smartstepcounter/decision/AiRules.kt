@@ -83,6 +83,15 @@ class AiRules(val config: AiRulesConfig = AiRulesConfig()) {
                     message = "AI: ліхтарик-сигнал увімкнено",
                     source = EventSource.AI,
                 ),
+                // Lab 7: critical state also reaches the BLE hub.
+                Decision(
+                    rule = Rule.R4_AI_ANOMALY,
+                    actuator = ActuatorType.BLE,
+                    action = DecisionAction.ACTIVATE,
+                    reason = reason,
+                    message = "BLE: тривогу надіслано на хаб",
+                    source = EventSource.AI,
+                ),
             )
         }
         if (torchOn && !coolingDown && !isShake) {

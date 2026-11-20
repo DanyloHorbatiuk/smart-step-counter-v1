@@ -647,6 +647,92 @@ SHAKE-аномалію спрацьовує навіть в авіарежимі
 оновлюється миттєво і бачить дані всіх користувачів. Натомість вона залежить від мережі, додає
 сотні мілісекунд затримки, коштує грошей за запити і вимагає передавати сенсорні дані третій стороні.
 
+## ЛР7: Цілісна смарт-система
+
+Усі модулі зібрані в один наскрізний сценарій, з'явилися вкладка «Головна» (Dashboard) і
+Smart-сценарії, які налаштовує користувач. Компонентна схема і бізнес-правила описані в
+[`docs/architecture.md`](docs/architecture.md), тест-кейси в [`docs/test-cases.md`](docs/test-cases.md).
+
+### Наскрізний сценарій
+
+```
+Акселерометр (ЛР1) → StepDetector → MlPipeline (ЛР6) → AiRules / DecisionEngine / SmartRuleEvaluator
+    → DecisionExecutor (авто-режим) → SmartActuator: вібрація, ліхтарик (ЛР4) + BLE COMMAND (ЛР2)
+    → actuator_events + sensor_records (ЛР5) → pending_uploads → Firebase (ЛР3)
+```
+
+- **Критичний стан**: R3 «Різкий удар» (|a| ≥ 25 м/с²) або R4 «AI: аномалія» (SHAKE ≥ 0,8 у 2 вікнах
+  поспіль). Нового детектора немає: кожне з цих правил додає ще одне рішення з
+  `ActuatorType.BLE`, і `DecisionExecutor` надсилає `ALARM:R3_IMPACT` / `ALARM:R4_AI_ANOMALY` на
+  характеристику COMMAND через `IBleConnector.sendData`.
+- **BLE-хаб як актуатор**: `Actuator.sendBleCommand` реалізує `SmartActuator` у `appScope`. Без
+  з'єднання команда не надсилається, `MockBleConnector` пише в термінал «Write failed: not connected»,
+  а подія `BLE` з `on = false` і приміткою «(BLE не підключено)» потрапляє в журнал. Застосунок не падає.
+  Подія BLE, як і будь-яка інша, йде в `actuator.events`, тобто в журнал «Керування», таблицю
+  `actuator_events` і примусовий запис `sensor_records`.
+- **ML-мітка у звітах**: `SensorData` (Firebase) і `SensorRecord` (Room) отримали поля `aiLabel` та
+  `aiConfidence`, тобто згладжену мітку, яку бачить користувач. Поки прогнозу немає, обидва поля null
+  (у Firebase вони не надсилаються).
+
+### Room v2
+
+Одна міграція `MIGRATION_1_2` (`AppDatabase.kt`) додає `sensor_records.aiLabel TEXT`,
+`sensor_records.aiConfidence REAL` (nullable, тож старі рядки лишаються без мітки) і таблицю
+`smart_rules (id, enabled, metric, threshold, action)`; enum зберігаються як рядки. SQL міграції
+звірено з експортованою схемою `app/schemas/.../2.json`. Стару чергу `pending_uploads` міграція не
+чіпає, рядки без нових полів Gson читає як null.
+
+### Dashboard (вкладка «Головна»)
+
+Перша вкладка. Окремої ViewModel немає: екран отримує дані з наявних ViewModel.
+
+| Віджет | Джерело |
+|---|---|
+| Поточний стан AI: мітка, впевненість, статус моделі, кроки | `AiViewModel.uiState`, `StepCounterViewModel` |
+| Зв'язок: статус хмари + кількість у черзі, стан BLE-мока | `CloudSyncState.pendingCount`, `BleConnectionState` |
+| Швидке керування: вібрація, ліхтарик, авто-режим | `ControlViewModel` |
+| Останні 5 записів Room: час, кроки, стан, AI-мітка | `SensorRecordDao.observeNewest(5)` (`ORDER BY timestamp DESC LIMIT 5`, Flow) |
+
+### Smart-сценарії
+
+Вкладка «Керування», секція «Smart-сценарії»: «Якщо [метрика ▼] > [число] тоді [дія ▼]» → «Додати».
+Тут же список правил із перемикачем увімк./вимк. і кнопкою видалення. Поріг приймає «10», «0,8» або «0.8».
+Якщо значення не є числом, поле підсвічується, а кнопка «Додати» неактивна.
+
+- Метрики: `ACCEL_MAGNITUDE` (|a| з гравітацією, м/с², у спокої ≈ 9,8), `RMS` (м/с²), `CADENCE` (кроків/хв),
+  `AI_CONFIDENCE_SHAKE` (ймовірність SHAKE в останньому вікні моделі, 0…1). Оператор лише `>`.
+- Дії: `VIBRATE` (одиночна вібрація), `TORCH_ON`, `BLE_ALARM` (`ALARM:SMART` на хаб).
+- Захист від дрижання (`SmartRuleEvaluator`, чистий Kotlin): правило спрацьовує, коли умова виконується
+  **≥ 3 семпли поспіль**, після цього діє **cooldown 5 с**. Будь-який семпл нижче порогу скидає серію.
+- Правила перевіряються в `ControlViewModel` на тому ж потоці семплів, що й `DecisionEngine`. Дії
+  виконуються через `DecisionExecutor`, тож при вимкненому авто-режимі вони лише логуються
+  (`adb logcat -s Decision`). У журналі подій їх видно як `EventSource.SMART`, правило `Rule.SMART`.
+
+### Стійкість
+
+- **Втрата зв'язку**: перевірено, що офлайн-запис іде в `pending_uploads`, а після відновлення мережі
+  черга досилається в порядку id (`CloudRepositoryTest`: offline → queue, network return → flush in order,
+  restart → restore). Нові поля `aiLabel`/`aiConfidence` у черзі серіалізуються разом із записом.
+- **Хибні спрацювання**: на рівні StepDetector працюють фільтри й гістерезис, далі MajorityVoter,
+  серія SHAKE-вікон із порогом впевненості та cooldown, а для Smart-правил серія з 3 семплів і cooldown.
+- **Переповнення диска**: `SQLiteFullException` → `StorageState.FULL` → агресивне очищення (ЛР5).
+- **Пам'ять**: слухач сенсора знімається в `onPause`. Корутини живуть у `viewModelScope` або в `appScope`
+  контейнера. Синглтони AppContainer тримають лише Application context: `AiViewModel.factory` бере
+  `applicationContext`, а ViewModel отримують `StateFlow`, а не Activity. LeakCanary підключено як
+  `debugImplementation`. Якщо після повороту чи виходу з Activity витік є, він покаже сповіщення.
+
+### Як тестувати
+
+1. `./gradlew test`: `SmartRuleEvaluatorTest` (серія 3 семпли, строге `>`, скидання серії, cooldown 5 с,
+   вимкнене правило, мапінг дій), `EndToEndScenarioTest` (SHAKE через MlPipeline → вібрація + ліхтарик +
+   `ALARM:R4_AI_ANOMALY` у лозі MockBleConnector + `actuator_events`; удар R3 → `ALARM:R3_IMPACT`,
+   `SensorData` з `aiLabel`; BLE не підключено → локальна тривога є, команди немає, без падіння;
+   Smart-правило поважає авто-режим).
+2. Вручну на емуляторі пройти сценарії з [`docs/test-cases.md`](docs/test-cases.md). Для руху є
+   `python3 tools/emu_motion.py --mode demo` або Extended Controls → Virtual sensors.
+3. Щоб побачити BLE-команду: «Пристрій» → «Пошук» → підключитися до StepHub-01, далі струсити телефон
+   (`--mode shake`). У терміналі з'явиться `TX → …a3f10004… ALARM:R4_AI_ANOMALY`.
+
 ## Структура
 
 ```
@@ -658,16 +744,17 @@ app/src/main/java/com/example/smartstepcounter/
 ├── sensor/StepDetector.kt    фільтри, детекція кроків, пороги, класифікація
 ├── actuator/
 │   ├── ActuatorModels.kt     ActuatorType, EventSource, VibrationPattern, ActuatorEvent, ActuatorState
-│   ├── Actuator.kt           інтерфейс актуаторів (реальний / фейковий)
-│   ├── SmartActuator.kt      вібрація, ліхтарик (апаратний / віртуальний), TorchCallback
+│   ├── Actuator.kt           інтерфейс актуаторів (реальний / фейковий), BLE-команда
+│   ├── SmartActuator.kt      вібрація, ліхтарик (апаратний / віртуальний), TorchCallback, BLE ALARM
 │   ├── ControlSettings.kt    перемикачі авто-режиму та дублювання лампи
-│   └── ControlViewModel.kt   Sensor → DecisionEngine → SmartActuator, журнал подій
+│   └── ControlViewModel.kt   Sensor → DecisionEngine + Smart-правила → SmartActuator, журнал подій
 ├── data/local/
 │   ├── SensorRecord.kt       @Entity sensor_records
 │   ├── ActuatorEventEntity.kt @Entity actuator_events
 │   ├── PendingUpload.kt      @Entity pending_uploads
+│   ├── SmartRule.kt          @Entity smart_rules + SmartRuleDao
 │   ├── *Dao.kt               SensorRecordDao, ActuatorEventDao, PendingUploadDao
-│   └── AppDatabase.kt        RoomDatabase v1
+│   └── AppDatabase.kt        RoomDatabase v2, MIGRATION_1_2
 ├── history/
 │   ├── ISensorHistoryRepository.kt / SensorHistoryRepository.kt  запис, очищення, SQLiteException
 │   ├── SensorRecorder.kt     тікер recordIntervalMs + фільтр + примусовий запис
@@ -688,6 +775,7 @@ app/src/main/java/com/example/smartstepcounter/
 │   ├── Decision.kt           Rule, DecisionAction, Decision
 │   ├── DecisionEngine.kt     правила R1–R3 (чистий Kotlin)
 │   ├── AiRules.kt            правила моделі: інтервал запису, R4 SHAKE-аномалія
+│   ├── SmartRules.kt         SmartMetric, SmartAction, SmartRuleEvaluator (серія + cooldown)
 │   └── DecisionExecutor.kt   виконання / лише лог при вимкненому авто-режимі
 ├── ble/
 │   ├── BleUuids.kt           GATT-профіль StepHub, команди
@@ -713,15 +801,17 @@ app/src/main/java/com/example/smartstepcounter/
 │   ├── CloudControlListener.kt SSE-потік, перепідключення
 │   └── CloudCommandHandler.kt  команда → актуатор, vibrate=false
 └── ui/
-    ├── MainScaffold.kt       NavigationBar: «Сенсор» / «Пристрій» / «Керування» / «Аналітика»
+    ├── MainScaffold.kt       NavigationBar: «Головна» / «Сенсор» / «Пристрій» / «Керування» / «Аналітика»
+    ├── DashboardScreen.kt    стан AI, хмара/BLE, швидке керування, 5 останніх записів
     ├── StepCounterScreen.kt  Compose UI + Canvas-індикатори
     ├── AiInsightsCard.kt     блок «AI Insights»: клас, ймовірності, inference, інтервал
     ├── DeviceScreen.kt       пошук, підключення, керування, термінал
-    ├── ControlScreen.kt      лампа, ліхтарик, вібрація, авто-режим, статус SSE, журнал
+    ├── ControlScreen.kt      лампа, ліхтарик, вібрація, авто-режим, Smart-сценарії, статус SSE, журнал
     ├── AnalyticsScreen.kt    графік Vico, перемикачі серій, статистика БД, історія актуаторів
     └── theme/Theme.kt        Material 3 (dynamic color)
 app/src/main/assets/          activity_classifier.tflite, labels.txt
 app/schemas/                  експортована схема Room (JSON)
+docs/                         architecture.md (схема, правила), test-cases.md
 ml/                           model_config.json, generate_dataset.py, train.py, report.md
 tools/emu_motion.py           симулятор акселерометра для емулятора
 ```

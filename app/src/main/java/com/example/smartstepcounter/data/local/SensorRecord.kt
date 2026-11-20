@@ -22,4 +22,7 @@ data class SensorRecord(
     val state: String,
     /** True when the record was forced by an actuator action at this moment. */
     val actionTriggered: Boolean = false,
+    /** Lab 7: smoothed ML label (AiLabel name) at record time; null without a prediction. */
+    val aiLabel: String? = null,
+    val aiConfidence: Float? = null,
 )

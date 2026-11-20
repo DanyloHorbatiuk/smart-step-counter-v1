@@ -28,6 +28,7 @@ class DecisionExecutor(
             }
             ActuatorType.TORCH -> actuator.toggleFlashlight(on, decision.source, decision.reason)
             ActuatorType.LAMP -> actuator.setVirtualLamp(on, decision.source, decision.reason)
+            ActuatorType.BLE -> if (on) actuator.sendBleCommand(decision.bleCommand, decision.source, decision.reason)
         }
         return true
     }

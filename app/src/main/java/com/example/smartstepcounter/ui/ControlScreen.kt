@@ -17,12 +17,17 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -30,6 +35,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -40,6 +48,7 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -51,7 +60,10 @@ import com.example.smartstepcounter.actuator.ControlViewModel
 import com.example.smartstepcounter.actuator.EventSource
 import com.example.smartstepcounter.cloud.ControlListenerState
 import com.example.smartstepcounter.cloud.ControlListenerStatus
+import com.example.smartstepcounter.data.local.SmartRule
 import com.example.smartstepcounter.decision.DecisionConfig
+import com.example.smartstepcounter.decision.SmartAction
+import com.example.smartstepcounter.decision.SmartMetric
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -64,6 +76,9 @@ data class ControlActions(
     val onVibrate: () -> Unit,
     val onAutoMode: (Boolean) -> Unit,
     val onMirror: (Boolean) -> Unit,
+    val onAddRule: (SmartMetric, Float, SmartAction) -> Unit,
+    val onRuleEnabled: (SmartRule, Boolean) -> Unit,
+    val onDeleteRule: (SmartRule) -> Unit,
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -74,6 +89,7 @@ fun ControlScreen(viewModel: ControlViewModel, actions: ControlActions) {
     val autoMode by viewModel.autoMode.collectAsStateWithLifecycle()
     val mirror by viewModel.mirrorLedToTorch.collectAsStateWithLifecycle()
     val log by viewModel.log.collectAsStateWithLifecycle()
+    val rules by viewModel.smartRules.collectAsStateWithLifecycle()
 
     Scaffold(
         topBar = { TopAppBar(title = { Text("Керування") }) },
@@ -91,13 +107,14 @@ fun ControlScreen(viewModel: ControlViewModel, actions: ControlActions) {
             TorchCard(actuator, actions.onTorch)
             VibrationCard(actuator, actions.onVibrate)
             AutoModeCard(autoMode, viewModel.config, actions.onAutoMode)
+            SmartRulesCard(rules, actions)
             EventLogCard(log)
         }
     }
 }
 
 @Composable
-private fun ControlCard(title: String, content: @Composable () -> Unit) {
+internal fun ControlCard(title: String, content: @Composable () -> Unit) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(title, style = MaterialTheme.typography.titleMedium)
@@ -122,7 +139,7 @@ private fun ControlListenerStatus.color() = when (this) {
     ControlListenerStatus.NOT_CONFIGURED -> Color(0xFF9E9E9E)
 }
 
-private fun formatTime(ms: Long) = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(ms))
+internal fun formatTime(ms: Long) = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(ms))
 
 @Composable
 private fun CloudControlCard(state: ControlListenerState, deviceId: String) {
@@ -241,7 +258,8 @@ private fun AutoModeCard(enabled: Boolean, config: DecisionConfig, onAutoMode: (
         HorizontalDivider()
         RuleRow("R1", "кроки ≥ ${config.stepGoal}", "подвійна вібрація, один раз до скидання")
         RuleRow("R2", "Біг ≥ ${config.runOnDelayMs / 1000} с", "ліхтарик увімк.; вимк. після ${config.runOffDelayMs / 1000} с без бігу")
-        RuleRow("R3", "|a| ≥ ${config.impactThreshold.toInt()} м/с²", "вібрація-тривога, пауза ${config.impactCooldownMs / 1000} с")
+        RuleRow("R3", "|a| ≥ ${config.impactThreshold.toInt()} м/с²", "вібрація-тривога + BLE ALARM, пауза ${config.impactCooldownMs / 1000} с")
+        RuleRow("R4", "AI: SHAKE ≥ 0,8 × 2 вікна", "вібрація + ліхтарик + BLE ALARM, пауза 10 с")
     }
 }
 
@@ -255,7 +273,7 @@ private fun RuleRow(id: String, condition: String, action: String) {
 }
 
 @Composable
-private fun SwitchRow(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+internal fun SwitchRow(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text(label, Modifier.weight(1f))
         Switch(checked = checked, onCheckedChange = onChange)
@@ -266,6 +284,7 @@ private fun ActuatorType.label() = when (this) {
     ActuatorType.TORCH -> "Ліхтарик"
     ActuatorType.VIBRATION -> "Вібрація"
     ActuatorType.LAMP -> "Лампа"
+    ActuatorType.BLE -> "BLE-команда"
 }
 
 private fun EventSource.color() = when (this) {
@@ -273,6 +292,7 @@ private fun EventSource.color() = when (this) {
     EventSource.MANUAL -> Color(0xFF1565C0)
     EventSource.CLOUD -> Color(0xFFEF6C00)
     EventSource.AI -> Color(0xFF00897B)
+    EventSource.SMART -> Color(0xFFAD1457)
 }
 
 @Composable
@@ -294,6 +314,77 @@ private fun EventLogCard(events: List<ActuatorEvent>) {
                     Text(e.source.name, color = e.source.color(), fontWeight = FontWeight.Bold, fontSize = 12.sp)
                 }
                 Text(e.reason, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+    }
+}
+
+/** "1,5" and "1.5" both parse; only finite numbers pass. */
+private fun parseThreshold(text: String): Float? =
+    text.trim().replace(',', '.').toFloatOrNull()?.takeIf { it.isFinite() }
+
+@Composable
+private fun SmartRulesCard(rules: List<SmartRule>, actions: ControlActions) {
+    var metric by rememberSaveable { mutableStateOf(SmartMetric.ACCEL_MAGNITUDE) }
+    var action by rememberSaveable { mutableStateOf(SmartAction.VIBRATE) }
+    var text by rememberSaveable { mutableStateOf("10") }
+    val threshold = parseThreshold(text)
+
+    ControlCard("Smart-сценарії") {
+        Text(
+            "Спрацьовує, коли умова виконується 3 семпли поспіль; далі пауза 5 с. Виконується лише в авто-режимі.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        if (rules.isEmpty()) Text("Правил ще немає", style = MaterialTheme.typography.bodySmall)
+        rules.forEach { rule ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Якщо ${rule.metric.title} > ${rule.threshold} тоді ${rule.action.title}",
+                    Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Switch(checked = rule.enabled, onCheckedChange = { actions.onRuleEnabled(rule, it) })
+                TextButton(onClick = { actions.onDeleteRule(rule) }) { Text("✕") }
+            }
+        }
+        HorizontalDivider()
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Якщо")
+            EnumPicker(metric.title, SmartMetric.entries, { "${it.title}, ${it.unit}" }) { metric = it }
+            Text(">")
+        }
+        OutlinedTextField(
+            value = text,
+            onValueChange = { text = it },
+            label = { Text("Поріг, ${metric.unit}") },
+            isError = threshold == null,
+            supportingText = { if (threshold == null) Text("Введіть число, наприклад 10 або 0,8") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("тоді")
+            EnumPicker(action.title, SmartAction.entries, { it.title }) { action = it }
+        }
+        Button(
+            onClick = { threshold?.let { actions.onAddRule(metric, it, action) } },
+            enabled = threshold != null,
+        ) { Text("Додати") }
+    }
+}
+
+@Composable
+private fun <T> EnumPicker(current: String, values: List<T>, title: (T) -> String, onPick: (T) -> Unit) {
+    var open by rememberSaveable { mutableStateOf(false) }
+    Box {
+        OutlinedButton(onClick = { open = true }) { Text("$current ▼") }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            values.forEach { value ->
+                DropdownMenuItem(text = { Text(title(value)) }, onClick = {
+                    onPick(value)
+                    open = false
+                })
             }
         }
     }

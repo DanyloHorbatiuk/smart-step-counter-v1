@@ -27,6 +27,7 @@ class DecisionExecutorTest {
         run(StepSnapshot(magnitude = 30f), 100)
         assertEquals(listOf(VibrationPattern.DOUBLE_PULSE, VibrationPattern.ALARM), actuator.vibrations)
         assertTrue(actuator.recorded.all { it.source == EventSource.AUTO })
+        assertEquals(listOf("ALARM:R3_IMPACT"), actuator.bleCommands)
     }
 
     @Test
@@ -44,7 +45,9 @@ class DecisionExecutorTest {
         run(StepSnapshot(steps = 50), 0)
         run(StepSnapshot(magnitude = 30f), 100)
         assertTrue(actuator.recorded.isEmpty())
-        assertEquals(2, logs.count { it.startsWith("skipped") })
+        // R1 vibration, R3 vibration and R3 BLE command.
+        assertEquals(3, logs.count { it.startsWith("skipped") })
+        assertTrue(actuator.bleCommands.isEmpty())
     }
 
     @Test

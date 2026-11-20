@@ -14,6 +14,8 @@ import com.example.smartstepcounter.history.ISensorHistoryRepository
 import com.example.smartstepcounter.history.SensorRecorder
 import com.example.smartstepcounter.history.StorageEvent
 import com.example.smartstepcounter.history.StorageState
+import com.example.smartstepcounter.ml.AiUiState
+import com.example.smartstepcounter.ml.Prediction
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -55,6 +57,7 @@ class AnalyticsViewModel(
     private val repository: ISensorHistoryRepository,
     steps: StateFlow<StepCounterUiState>,
     actuatorEvents: Flow<ActuatorEvent>,
+    ai: () -> Prediction? = { null },
 ) : ViewModel() {
 
     private val series = MutableStateFlow(AnalyticsUiState().series)
@@ -72,8 +75,12 @@ class AnalyticsViewModel(
 
     val events: SharedFlow<StorageEvent> = repository.events
 
+    /** Lab 7: the newest [RECENT_SIZE] records, newest first, for the Dashboard. */
+    val recent: StateFlow<List<SensorRecord>> = repository.observeNewest(RECENT_SIZE)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
     init {
-        val recorder = SensorRecorder(repository, steps, actuatorEvents)
+        val recorder = SensorRecorder(repository, steps, actuatorEvents, ai = ai)
         viewModelScope.launch { recorder.run() }
     }
 
@@ -91,15 +98,19 @@ class AnalyticsViewModel(
 
         const val EVENT_LIST_SIZE = 20
 
+        const val RECENT_SIZE = 5
+
         fun factory(
             container: AppContainer,
             steps: StateFlow<StepCounterUiState>,
+            ai: StateFlow<AiUiState>,
         ): ViewModelProvider.Factory = viewModelFactory {
             initializer {
                 AnalyticsViewModel(
                     repository = container.historyRepository,
                     steps = steps,
                     actuatorEvents = container.actuator.events,
+                    ai = { ai.value.insight.smoothed },
                 )
             }
         }

@@ -9,6 +9,7 @@ enum class Rule(val title: String) {
     R2_RUN_TORCH("R2 Біг — сигнальний ліхтар"),
     R3_IMPACT("R3 Різкий удар"),
     R4_AI_ANOMALY("R4 AI: аномалія руху"),
+    SMART("Smart-сценарій користувача"),
 }
 
 enum class DecisionAction { ACTIVATE, DEACTIVATE }
@@ -27,4 +28,7 @@ data class Decision(
     val pattern: VibrationPattern? = null,
     /** Who is reported in the actuator log: threshold rules are AUTO, model-driven ones AI. */
     val source: EventSource = EventSource.AUTO,
-)
+) {
+    /** Payload for [ActuatorType.BLE], e.g. "ALARM:R3_IMPACT". */
+    val bleCommand: String get() = "ALARM:${rule.name}"
+}

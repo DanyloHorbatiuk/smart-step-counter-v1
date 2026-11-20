@@ -23,6 +23,9 @@ class FakeSensorRecordDao : SensorRecordDao {
     override fun observeLatest(limit: Int): Flow<List<SensorRecord>> =
         rows.map { list -> list.sortedWith(ORDER).takeLast(limit) }
 
+    override fun observeNewest(limit: Int): Flow<List<SensorRecord>> =
+        rows.map { list -> list.sortedWith(ORDER).takeLast(limit).reversed() }
+
     override fun count(): Flow<Int> = rows.map { it.size }
 
     override suspend fun deleteOlderThan(timestamp: Long): Int = remove { it.timestamp < timestamp }

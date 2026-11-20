@@ -20,6 +20,10 @@ interface SensorRecordDao {
     )
     fun observeLatest(limit: Int): Flow<List<SensorRecord>>
 
+    /** Lab 7: the newest [limit] records, newest first (Dashboard). */
+    @Query("SELECT * FROM sensor_records ORDER BY timestamp DESC LIMIT :limit")
+    fun observeNewest(limit: Int): Flow<List<SensorRecord>>
+
     @Query("SELECT COUNT(*) FROM sensor_records")
     fun count(): Flow<Int>
 

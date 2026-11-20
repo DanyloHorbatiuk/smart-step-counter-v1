@@ -26,6 +26,9 @@ interface ISensorHistoryRepository {
     /** The newest [limit] records, oldest first. */
     fun observeLatest(limit: Int): Flow<List<SensorRecord>>
 
+    /** Lab 7: the newest [limit] records, newest first. */
+    fun observeNewest(limit: Int): Flow<List<SensorRecord>>
+
     fun observeCount(): Flow<Int>
 
     /** The newest [limit] actuator events, newest first. */

@@ -1,5 +1,6 @@
 package com.example.smartstepcounter.cloud
 
+import com.example.smartstepcounter.ml.Prediction
 import com.example.smartstepcounter.sensor.StepSnapshot
 
 /** One accelerometer reading, stored at devices/{deviceId}/readings/{pushId}. */
@@ -18,9 +19,12 @@ data class SensorData(
     val cadence: Float,
     val state: String,
     val rms: Float,
+    /** Lab 7: smoothed ML label (AiLabel name); null (not sent) without a prediction. */
+    val aiLabel: String? = null,
+    val aiConfidence: Float? = null,
 ) {
     companion object {
-        fun from(snapshot: StepSnapshot, deviceId: String, timestamp: Long) = SensorData(
+        fun from(snapshot: StepSnapshot, deviceId: String, timestamp: Long, ai: Prediction? = null) = SensorData(
             deviceId = deviceId,
             timestamp = timestamp,
             value = snapshot.magnitude,
@@ -31,6 +35,8 @@ data class SensorData(
             cadence = snapshot.cadence,
             state = snapshot.state.name,
             rms = snapshot.rms,
+            aiLabel = ai?.label?.name,
+            aiConfidence = ai?.confidence,
         )
     }
 }

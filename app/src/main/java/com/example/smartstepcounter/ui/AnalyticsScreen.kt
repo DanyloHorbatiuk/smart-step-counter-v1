@@ -64,9 +64,6 @@ import com.patrykandpatrick.vico.core.cartesian.data.lineSeries
 import com.patrykandpatrick.vico.core.cartesian.layer.LineCartesianLayer
 import com.patrykandpatrick.vico.core.common.data.ExtraStore
 import com.patrykandpatrick.vico.core.common.shape.CorneredShape
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 data class AnalyticsActions(
     val onToggleSeries: (Series) -> Unit,
@@ -88,8 +85,6 @@ private val TimestampsKey = ExtraStore.Key<List<Long>>()
 
 /** Indices of the points recorded at an actuator action. */
 private val ActionIndicesKey = ExtraStore.Key<Set<Int>>()
-
-private fun formatTime(ms: Long) = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(ms))
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

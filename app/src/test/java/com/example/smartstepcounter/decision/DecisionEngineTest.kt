@@ -86,8 +86,11 @@ class DecisionEngineTest {
     @Test
     fun impactAboveThresholdTriggersAlarm() {
         val decisions = engine.evaluate(snap(magnitude = 25f), 0)
-        val alarm = decisions.single { it.rule == Rule.R3_IMPACT }
-        assertEquals(VibrationPattern.ALARM, alarm.pattern)
+        val impact = decisions.filter { it.rule == Rule.R3_IMPACT }
+        // Critical state: vibration alarm + BLE command.
+        assertEquals(listOf(ActuatorType.VIBRATION, ActuatorType.BLE), impact.map { it.actuator })
+        assertEquals(VibrationPattern.ALARM, impact[0].pattern)
+        assertEquals("ALARM:R3_IMPACT", impact[1].bleCommand)
     }
 
     @Test
@@ -97,7 +100,9 @@ class DecisionEngineTest {
 
     @Test
     fun impactHasTenSecondCooldown() {
-        fun impact(t: Long) = engine.evaluate(snap(magnitude = 30f), t).count { it.rule == Rule.R3_IMPACT }
+        fun impact(t: Long) = engine.evaluate(snap(magnitude = 30f), t).count {
+            it.rule == Rule.R3_IMPACT && it.actuator == ActuatorType.VIBRATION
+        }
         assertEquals(1, impact(0))
         assertEquals(0, impact(500))
         assertEquals(0, impact(9_999))
